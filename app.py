@@ -309,42 +309,88 @@ class Backtester:
         return None
 
     @staticmethod
-    def run(data,strat,symbol):
-        cl=[d["close"] for d in data]; hi=[d["high"] for d in data]; lo=[d["low"] for d in data]
-        p=strat.params;trades=[];bal=10000.0;peak=bal;pos=None
-        for i in range(100,len(data)-1):
-            w=cl[max(0,i-100):i+1];hw=hi[max(0,i-100):i+1];lw=lo[max(0,i-100):i+1]
-            cpw=cl[max(0,i-14):i+1];hpw=hi[max(0,i-14):i+1];lpw=lo[max(0,i-14):i+1]
+    def run(data, strat, symbol):
+        cl = [d["close"] for d in data]
+        hi = [d["high"] for d in data]
+        lo = [d["low"] for d in data]
+        p = strat.params
+        trades = []
+        bal = 10000.0
+        peak = bal
+        pos = None
+
+        for i in range(100, len(data) - 1):
+            w = cl[max(0, i - 100):i + 1]
+            hw = hi[max(0, i - 100):i + 1]
+            lw = lo[max(0, i - 100):i + 1]
+            cpw = cl[max(0, i - 14):i + 1]
+            hpw = hi[max(0, i - 14):i + 1]
+            lpw = lo[max(0, i - 14):i + 1]
+
             if pos is None:
-                sig=Backtester._signal(w,hw,lw,p)
+                sig = Backtester._signal(w, hw, lw, p)
                 if sig:
-                    e=cl[i];atr=TA.atr(hpw,lpw,cpw)
-                    atr_val=TA.atr(hpw,lpw,cpw,p.get("atr_period",14))
-                    sl_mult=p.get("atr_sl_mult",1.5);tp_mult=p.get("atr_tp_mult",3.0)
-                    sd=atr_val*sl_mult;td=sd*p.get("rr_ratio",2.0)
-                hit=None
-                if pos["dir"]=="BUY":
-                    if lo[i]<=pos["sl"]:hit="SL"
-                    elif hi[i]>=pos["tp"]:hit="TP"
-                else:
-                    if hi[i]>=pos["sl"]:hit="SL"
-                    elif lo[i]<=pos["tp"]:hit="TP"
+                    e = cl[i]
+                    atr_val = TA.atr(hpw, lpw, cpw, p.get("atr_period", 14))
+                    sl_mult = p.get("atr_sl_mult", 1.5)
+                    tp_mult = p.get("atr_tp_mult", 3.0)
+                    sd = atr_val * sl_mult
+                    td = sd * p.get("rr_ratio", 2.0)
+
+                    # FIX: Properly open the position
+                    pos = {
+                        "dir": sig,
+                        "entry": e,
+                        "sl": e - sd if sig == "BUY" else e + sd,
+                        "tp": e + td if sig == "BUY" else e - td
+                    }
+
+            # Only check exits if we have an open position
+            if pos is not None:
+                hit = None
+                if pos["dir"] == "BUY":
+                    if lo[i] <= pos["sl"]:
+                        hit = "SL"
+                    elif hi[i] >= pos["tp"]:
+                        hit = "TP"
+                else:  # SELL
+                    if hi[i] >= pos["sl"]:
+                        hit = "SL"
+                    elif lo[i] <= pos["tp"]:
+                        hit = "TP"
+
                 if hit:
-                    ep=pos["sl"] if hit=="SL" else pos["tp"]
-                    pnl=((ep-pos["entry"]) if pos["dir"]=="BUY" else (pos["entry"]-ep))/pos["entry"]*bal*0.01
-                    bal+=pnl;peak=max(peak,bal)
-                    trades.append({"win":pnl>0,"pnl":pnl})
-                    pos=None
-        if pos:
-            ep=cl[-1];pnl=((ep-pos["entry"]) if pos["dir"]=="BUY" else (pos["entry"]-ep))/pos["entry"]*bal*0.01
-            bal+=pnl;trades.append({"win":pnl>0,"pnl":pnl})
-        n=len(trades);ws=sum(1 for t in trades if t["win"])
-        wr=(ws/n*100) if n>0 else 0;tp=sum(t["pnl"] for t in trades)
-        gp=sum(t["pnl"] for t in trades if t["pnl"]>0);gl=abs(sum(t["pnl"] for t in trades if t["pnl"]<0))
-        pf=gp/gl if gl>0 else 1.0;dd=(peak-min(peak,bal))/peak*100 if peak>0 else 0
-        fit=(wr/100)*pf*max(0.1,1-dd/50)*(min(n,10)/10)
-        strat.trades=n;strat.wins=ws;strat.winrate=round(wr,1)
-        strat.pnl=round(tp,2);strat.pf=round(pf,2);strat.dd=round(dd,1);strat.fitness=round(fit,4)
+                    ep = pos["sl"] if hit == "SL" else pos["tp"]
+                    pnl = ((ep - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - ep)) / pos["entry"] * bal * 0.01
+                    bal += pnl
+                    peak = max(peak, bal)
+                    trades.append({"win": pnl > 0, "pnl": pnl})
+                    pos = None
+
+        # Close any open position at the end
+        if pos is not None:
+            ep = cl[-1]
+            pnl = ((ep - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - ep)) / pos["entry"] * bal * 0.01
+            bal += pnl
+            trades.append({"win": pnl > 0, "pnl": pnl})
+
+        n = len(trades)
+        ws = sum(1 for t in trades if t["win"])
+        wr = (ws / n * 100) if n > 0 else 0
+        tp = sum(t["pnl"] for t in trades)
+        gp = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+        gl = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
+        pf = gp / gl if gl > 0 else 1.0
+        dd = (peak - min(peak, bal)) / peak * 100 if peak > 0 else 0
+        fit = (wr / 100) * pf * max(0.1, 1 - dd / 50) * (min(n, 10) / 10)
+
+        strat.trades = n
+        strat.wins = ws
+        strat.winrate = round(wr, 1)
+        strat.pnl = round(tp, 2)
+        strat.pf = round(pf, 2)
+        strat.dd = round(dd, 1)
+        strat.fitness = round(fit, 4)
         return strat
 
 # ═══════════════════════════════════════
@@ -750,7 +796,7 @@ body{{background:#060810;color:#c0c0c0;font-family:'Segoe UI',system-ui,monospac
 <div class="sec"><h2>🏆 ALL {ps['total']} SELF-DESIGNED AGENTS ({COLONY_ID}) — Each agent creates its own strategy</h2>
 <div style="max-height:500px;overflow-y:auto;border:1px solid #1a1a33;border-radius:8px;margin:5px 0">
 <div class="ar hdr"><span>#</span><span>AGENT</span><span>SYM</span><span>STYLE</span><span>WR</span><span>TRD</span><span>W/L</span><span>RR</span><span>PF</span><span>FIT</span></div>
-{top_rows}</div><div style="text-align:center;color:#888;font-size:9px;padding:2px">🖱️ Scroll to see all {ps['total']} agents | Hover any row for strategy details</div></div>
+{all_rows}</div><div style="text-align:center;color:#888;font-size:9px;padding:2px">🖱️ Scroll to see all {ps['total']} agents | Hover any row for strategy details</div></div>
 
 
 top5_strats=""
