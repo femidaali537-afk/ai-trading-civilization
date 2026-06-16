@@ -40,14 +40,14 @@ GH_TOKEN = os.getenv("GH_TOKEN", "")  # Set in HF Space Secrets
 GH_REPO = "femidaali537-afk/ai-trading-civilization"
 GH_BRANCH = "main"
 COLONY_ID = os.getenv("COLONY_ID", "colony-1")
-AGENTS_PER_COLONY = int(os.getenv("AGENTS_PER_COLONY", "1000"))
+AGENTS_PER_COLONY = 50
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "120"))  # push to GitHub every 120s
 
 CFG = {
     "symbols": ["XAUUSD=X", "BTC-USD"],
     "yf_symbols": {"XAUUSD": "GC=F", "BTCUSD": "BTC-USD"},
     "timeframes": ["1m", "3m", "5m", "15m"],
-    "backtest_days": 30,     # 30 days of minute data
+    "backtest_days": 2,     # 30 days of minute data
     "evolution_cycles": 5,   # evolve every 5 cycles
     "data_refresh_s": 60,
     "dashboard_refresh_s": 10,
@@ -309,88 +309,42 @@ class Backtester:
         return None
 
     @staticmethod
-    def run(data, strat, symbol):
-        cl = [d["close"] for d in data]
-        hi = [d["high"] for d in data]
-        lo = [d["low"] for d in data]
-        p = strat.params
-        trades = []
-        bal = 10000.0
-        peak = bal
-        pos = None
-
-        for i in range(100, len(data) - 1):
-            w = cl[max(0, i - 100):i + 1]
-            hw = hi[max(0, i - 100):i + 1]
-            lw = lo[max(0, i - 100):i + 1]
-            cpw = cl[max(0, i - 14):i + 1]
-            hpw = hi[max(0, i - 14):i + 1]
-            lpw = lo[max(0, i - 14):i + 1]
-
+    def run(data,strat,symbol):
+        cl=[d["close"] for d in data]; hi=[d["high"] for d in data]; lo=[d["low"] for d in data]
+        p=strat.params;trades=[];bal=10000.0;peak=bal;pos=None
+        for i in range(100,len(data)-1):
+            w=cl[max(0,i-100):i+1];hw=hi[max(0,i-100):i+1];lw=lo[max(0,i-100):i+1]
+            cpw=cl[max(0,i-14):i+1];hpw=hi[max(0,i-14):i+1];lpw=lo[max(0,i-14):i+1]
             if pos is None:
-                sig = Backtester._signal(w, hw, lw, p)
+                sig=Backtester._signal(w,hw,lw,p)
                 if sig:
-                    e = cl[i]
-                    atr_val = TA.atr(hpw, lpw, cpw, p.get("atr_period", 14))
-                    sl_mult = p.get("atr_sl_mult", 1.5)
-                    tp_mult = p.get("atr_tp_mult", 3.0)
-                    sd = atr_val * sl_mult
-                    td = sd * p.get("rr_ratio", 2.0)
-
-                    # FIX: Properly open the position
-                    pos = {
-                        "dir": sig,
-                        "entry": e,
-                        "sl": e - sd if sig == "BUY" else e + sd,
-                        "tp": e + td if sig == "BUY" else e - td
-                    }
-
-            # Only check exits if we have an open position
-            if pos is not None:
-                hit = None
-                if pos["dir"] == "BUY":
-                    if lo[i] <= pos["sl"]:
-                        hit = "SL"
-                    elif hi[i] >= pos["tp"]:
-                        hit = "TP"
-                else:  # SELL
-                    if hi[i] >= pos["sl"]:
-                        hit = "SL"
-                    elif lo[i] <= pos["tp"]:
-                        hit = "TP"
-
+                    e=cl[i];atr=TA.atr(hpw,lpw,cpw)
+                    atr_val=TA.atr(hpw,lpw,cpw,p.get("atr_period",14))
+                    sl_mult=p.get("atr_sl_mult",1.5);tp_mult=p.get("atr_tp_mult",3.0)
+                    sd=atr_val*sl_mult;td=sd*p.get("rr_ratio",2.0)
+                hit=None
+                if pos["dir"]=="BUY":
+                    if lo[i]<=pos["sl"]:hit="SL"
+                    elif hi[i]>=pos["tp"]:hit="TP"
+                else:
+                    if hi[i]>=pos["sl"]:hit="SL"
+                    elif lo[i]<=pos["tp"]:hit="TP"
                 if hit:
-                    ep = pos["sl"] if hit == "SL" else pos["tp"]
-                    pnl = ((ep - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - ep)) / pos["entry"] * bal * 0.01
-                    bal += pnl
-                    peak = max(peak, bal)
-                    trades.append({"win": pnl > 0, "pnl": pnl})
-                    pos = None
-
-        # Close any open position at the end
-        if pos is not None:
-            ep = cl[-1]
-            pnl = ((ep - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - ep)) / pos["entry"] * bal * 0.01
-            bal += pnl
-            trades.append({"win": pnl > 0, "pnl": pnl})
-
-        n = len(trades)
-        ws = sum(1 for t in trades if t["win"])
-        wr = (ws / n * 100) if n > 0 else 0
-        tp = sum(t["pnl"] for t in trades)
-        gp = sum(t["pnl"] for t in trades if t["pnl"] > 0)
-        gl = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
-        pf = gp / gl if gl > 0 else 1.0
-        dd = (peak - min(peak, bal)) / peak * 100 if peak > 0 else 0
-        fit = (wr / 100) * pf * max(0.1, 1 - dd / 50) * (min(n, 10) / 10)
-
-        strat.trades = n
-        strat.wins = ws
-        strat.winrate = round(wr, 1)
-        strat.pnl = round(tp, 2)
-        strat.pf = round(pf, 2)
-        strat.dd = round(dd, 1)
-        strat.fitness = round(fit, 4)
+                    ep=pos["sl"] if hit=="SL" else pos["tp"]
+                    pnl=((ep-pos["entry"]) if pos["dir"]=="BUY" else (pos["entry"]-ep))/pos["entry"]*bal*0.01
+                    bal+=pnl;peak=max(peak,bal)
+                    trades.append({"win":pnl>0,"pnl":pnl})
+                    pos=None
+        if pos:
+            ep=cl[-1];pnl=((ep-pos["entry"]) if pos["dir"]=="BUY" else (pos["entry"]-ep))/pos["entry"]*bal*0.01
+            bal+=pnl;trades.append({"win":pnl>0,"pnl":pnl})
+        n=len(trades);ws=sum(1 for t in trades if t["win"])
+        wr=(ws/n*100) if n>0 else 0;tp=sum(t["pnl"] for t in trades)
+        gp=sum(t["pnl"] for t in trades if t["pnl"]>0);gl=abs(sum(t["pnl"] for t in trades if t["pnl"]<0))
+        pf=gp/gl if gl>0 else 1.0;dd=(peak-min(peak,bal))/peak*100 if peak>0 else 0
+        fit=(wr/100)*pf*max(0.1,1-dd/50)*(min(n,10)/10)
+        strat.trades=n;strat.wins=ws;strat.winrate=round(wr,1)
+        strat.pnl=round(tp,2);strat.pf=round(pf,2);strat.dd=round(dd,1);strat.fitness=round(fit,4)
         return strat
 
 # ═══════════════════════════════════════
@@ -648,41 +602,50 @@ _tick=0
 # MAIN LOOP (background thread)
 # ═══════════════════════════════════════
 async def main_loop():
-    global _tick,recent_signals,all_colonies
-    Log.i(f"🏛️  {COLONY_ID} online — {AGENTS_PER_COLONY} agents | XAUUSD+BTCUSD | 1m/3m/5m/15m")
-    await pop.backtest_all(fetcher)
+    global _tick, recent_signals, all_colonies
+    Log.i(f"🏛️ {COLONY_ID} ULTRA-LITE online — 50 agents | Backtest ~every 10s")
 
     while True:
         try:
-            _tick+=1
+            _tick += 1
 
-            # Data refresh + signals (every 60s)
-            if _tick%6==1:
+            # LIGHT BACKTEST EVERY 10 SECONDS (only top 12 agents + small data)
+            try:
                 for sym in CFG["symbols"]:
-                    try:
-                        data=await fetcher.fetch(sym,"5m",3)
-                        if data and len(data)>100:
-                            cl=[d["close"] for d in data];hi=[d["high"] for d in data];lo=[d["low"] for d in data]
-                            sigs=pop.get_signals(cl,hi,lo,sym,cl[-1])
-                            recent_signals.extend(sigs)
-                            if len(recent_signals)>2000:recent_signals=recent_signals[-1000:]
-                    except:pass
+                    data = await fetcher.fetch(sym, "5m", 2)
+                    if data and len(data) > 15:
+                        for s in pop.strategies[:12]:
+                            try:
+                                Backtester.run(data, s, sym)
+                            except:
+                                pass
 
-            # Evolution (every 5th tick)
-            if _tick%30==1:
-                pop.evolve()
+                # Quick signals
+                data = await fetcher.fetch(CFG["symbols"][0], "5m", 1)
+                if data and len(data) > 12:
+                    cl = [d["close"] for d in data]
+                    hi = [d["high"] for d in data]
+                    lo = [d["low"] for d in data]
+                    sigs = pop.get_signals(cl, hi, lo, CFG["symbols"][0], cl[-1])
+                    recent_signals.extend(sigs)
+                    if len(recent_signals) > 80:
+                        recent_signals = recent_signals[-40:]
+            except:
+                pass
 
-            # Backtest (every 10th tick)
-            if _tick%60==1:
-                await pop.backtest_all(fetcher)
-
-            # GitHub sync (every SYNC_INTERVAL)
-            if _tick%12==1:
-                await ghdb.push_agents(pop.strategies)
-                all_colonies=await ghdb.pull_all_colonies()
-                pop.save_to_disk()  # Triple backup: disk + GitHub + stats
+            # Light evolution every ~3 minutes
+            if _tick % 18 == 1:
+                try:
+                    pop.evolve()
+                except:
+                    pass
 
             await asyncio.sleep(10)
+
+        except Exception as e:
+            Log.w(f"Ultra-lite safe: {e}")
+            await asyncio.sleep(8)
+
         except Exception as e:
             Log.e(f"Loop: {e}")
             await asyncio.sleep(10)
@@ -699,133 +662,38 @@ Log.i(f"🚀 {COLONY_ID} running — {AGENTS_PER_COLONY} agents live")
 # ═══════════════════════════════════════
 # GRADIO DASHBOARD
 # ═══════════════════════════════════════
+
+
+
 import gradio as gr
 
-def dashboard():
-    ss=sorted(pop.strategies,key=lambda s:s.fitness,reverse=True)
-    ps=pop.stats()
-    xau_price=fetcher.price("XAUUSD=X")
-    btc_price=fetcher.price("BTC-USD")
+def get_simple_data():
+    try:
+        ss = sorted(pop.strategies, key=lambda s: s.fitness, reverse=True)[:25]
+        rows = []
+        for s in ss:
+            rows.append([s.id[-8:], f"{s.winrate:.0f}%", s.trades, f"{s.pf:.1f}", f"{s.fitness:.3f}"])
+        return rows
+    except:
+        return []
 
-    # Consensus
-    rel_xau=[s for s in recent_signals[-200:] if"XAU" in s.get("symbol","")]
-    rel_btc=[s for s in recent_signals[-200:] if"BTC" in s.get("symbol","")]
-    xau_b=sum(1 for s in rel_xau if s["dir"]=="BUY");xau_s=len(rel_xau)-xau_b
-    btc_b=sum(1 for s in rel_btc if s["dir"]=="BUY");btc_s=len(rel_btc)-btc_b
+def get_status():
+    try:
+        ps = pop.stats()
+        xau = fetcher.price("XAUUSD=X")
+        btc = fetcher.price("BTC-USD")
+        return f"🏛️ ULTRA LITE (50 agents) | XAU ${xau:.2f} | BTC ${btc:.0f} | Gen {ps.get('gen',0)} | Best WR {ps.get('best_wr',0):.0f}% | Backtests ~every 10s"
+    except:
+        return "ULTRA LITE running..."
 
-    def con(n,b,s):
-        if n==0:return("NEUTRAL","#888",0)
-        d="BUY" if b>s else"SELL"
-        c="#0f0" if d=="BUY" else"#f44"
-        return(d,c,round(max(b,s)/n*100,1))
+with gr.Blocks(title="AI Trading Civilization - ULTRA LITE (50 agents)", theme=gr.themes.Soft(), css="footer{display:none!important}") as demo:
+    gr.Markdown(get_status, every=8)
+    gr.DataFrame(
+        value=get_simple_data,
+        headers=["Agent", "Win Rate", "Trades", "Profit Factor", "Fitness"],
+        every=8,
+        label="Top 25 Agents (updates every 8s)"
+    )
 
-    xd,xc,xp=con(len(rel_xau),xau_b,xau_s)
-    bd,bc,bp=con(len(rel_btc),btc_b,btc_s)
-
-    # Top agents HTML
-    # ALL AGENTS TABLE (scrollable)
-    all_rows=""
-    for i,s in enumerate(ss):
-        wr=s.winrate;c="#0f0" if wr>=70 else"#ff0" if wr>=50 else"#f44"
-        p=s.params
-        # Agent's self-chosen name from its indicators
-        style=p.get("_name","AUTO")
-        sym_raw=s.id.split("_")[1] if len(s.id.split("_"))>1 else "?"
-        sym_display="XAU" if "XAU" in sym_raw else "BTC" if "BTC" in sym_raw else sym_raw[:4]
-        win=s.wins;loss=s.trades-s.wins;wlr=round(win/max(1,loss),2)
-        all_rows+=f"""<div class="ar" title="Click for full strategy | Indicators: {p.get('_indicators',['?'])} | Threshold: {p.get('signal_threshold',3)} | RR: 1:{p.get('rr_ratio',2.0):.0f} | Trailing: {p.get('trailing_stop',False)}"><span class="rk">#{i+1}</span><span class="id">{s.id[-10:]}</span>
-        <span class="sym">{sym_display}</span><span class="st">{style}</span>
-        <span class="wr" style="color:{c}">{wr:.0f}%</span>
-        <span class="td">{s.trades}</span><span class="wl">{win}W/{loss}L</span>
-        <span class="rr">1:{p.get('rr_ratio',0):.0f}</span><span class="pf">PF:{s.pf:.1f}</span><span class="ft">F:{s.fitness:.3f}</span></div>"""
-
-    # Colony cards
-    colony_cards=""
-    c_total=0;c_above70=0
-    for cid,cd in all_colonies.items():
-        c_total+=1
-        st=cd.get("stats",{})
-        c_above70+=st.get("agents_above_70",0)
-        colony_cards+=f"""<div class="cc"><span class="ccn">🏛️ {cid}</span>
-        <span class="ccs">{st.get('total_agents','?')} agents | Best: {st.get('best_wr','?')}% WR | ≥70%: {st.get('agents_above_70','?')}</span></div>"""
-    if not colony_cards:colony_cards="""<div class="cc"><span class="ccn">🏛️ {COLONY_ID} (only)</span>
-    <span class="ccs">Duplicate this HF Space → more colonies will appear here</span></div>"""
-
-    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🏛️ AI Trading Civilization</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#060810;color:#c0c0c0;font-family:'Segoe UI',system-ui,monospace;min-height:100vh}}
-.bnr{{background:linear-gradient(135deg,#0a1020,#0d2018);padding:16px;text-align:center;border-bottom:2px solid #0f0}}
-.bnr h1{{color:#0f0;font-size:20px}} .bnr p{{color:#6a6;font-size:10px;margin-top:3px}}
-.badge{{display:inline-block;background:#0f0;color:#000;padding:3px 10px;border-radius:10px;font-size:10px;font-weight:bold;margin:3px 2px}}
-.pr{{display:flex;justify-content:center;gap:20px;padding:10px;background:#0a0c18;border-bottom:1px solid #1a1a33}}
-.pc{{text-align:center;padding:8px 20px;background:#0d0d1a;border:1px solid #1a1a33;border-radius:8px}}
-.pc .sym{{color:#0f0;font-size:14px;font-weight:bold}} .pc .val{{color:#fff;font-size:18px;font-weight:bold}}
-.cn{{display:flex;justify-content:center;gap:15px;padding:8px}}
-.cnb{{padding:4px 16px;border-radius:6px;font-size:12px;font-weight:bold}}
-.sec{{padding:10px 15px}} .sec h2{{color:#0f0;font-size:13px;margin-bottom:6px;border-bottom:1px solid #1a1a33;padding-bottom:4px}}
-.ar{{display:grid;grid-template-columns:30px 70px 30px 65px 40px 35px 50px 45px 45px 50px;gap:4px;padding:3px 8px;font-size:10px;border-bottom:1px solid #111;align-items:center}}
-.ar:hover{{background:#111}}.ar .rk{{color:#888}}.ar .id{{color:#0cf;font-size:9px}}
-.ar .wr{{font-weight:bold}}.ar .td{{color:#888}}.ar .pf{{color:#0cf;font-size:9px}}.ar .ft{{color:#0f0;font-size:9px}}
-.sr{{display:flex;gap:12px;flex-wrap:wrap}}.sb{{background:#0d0d1a;border:1px solid #1a1a33;border-radius:8px;padding:8px 14px;text-align:center;min-width:90px}}
-.sb .num{{color:#0f0;font-size:20px;font-weight:bold}}.sb .lbl{{color:#888;font-size:8px}}
-.cc{{background:#0d0d1a;border:1px solid #1a1a33;border-radius:8px;padding:10px 14px;margin:6px 0}}
-.cc .ccn{{color:#0f0;font-size:13px;font-weight:bold;display:block}}.cc .ccs{{color:#aaa;font-size:10px}}
-.ar.hdr{{position:sticky;top:0;background:#0a0c18;z-index:10;border-bottom:2px solid #0f0;font-weight:bold;color:#0f0;font-size:9px}}
-.wl{{color:#aaa;font-size:9px}}.rr{{color:#ff0;font-size:9px}}.st{{color:#aaa;font-size:8px}}.sym{{color:#ff0;font-weight:bold;font-size:10px}}
-.ft{{text-align:center;padding:8px;color:#444;font-size:8px;border-top:1px solid #1a1a33;margin-top:8px}}
-</style></head>
-<body>
-<div class="bnr"><h1>🏛️ AI TRADING CIVILIZATION</h1>
-<p>XAUUSD + BTCUSD | 1000+ Agents per Colony | 1m/3m/5m/15m | Multi-Space Sync</p>
-<span class="badge">🟢 {COLONY_ID}</span><span class="badge">🧬 Gen {ps['gen']}</span><span class="badge">🔬 {ps['backtests']}</span></div>
-
-<div class="pr">
-<div class="pc"><span class="sym">🥇 XAUUSD</span><br><span class="val">${xau_price:.2f}</span></div>
-<div class="pc"><span class="sym">₿ BTCUSD</span><br><span class="val">${btc_price:.0f}</span></div>
-</div>
-
-<div class="cn">
-<div class="cnb" style="background:{xc}20;color:{xc};border:1px solid{xc}">🥇 XAUUSD: <b>{xd}</b> ({xp}%/ {len(rel_xau)})</div>
-<div class="cnb" style="background:{bc}20;color:{bc};border:1px solid{bc}">₿ BTCUSD: <b>{bd}</b> ({bp}%/ {len(rel_btc)})</div>
-</div>
-
-<div class="sec"><h2>🌍 ALL COLONIES ({c_total} connected)</h2>{colony_cards}</div>
-
-<div class="sec"><h2>🏆 ALL {ps['total']} SELF-DESIGNED AGENTS ({COLONY_ID}) — Each agent creates its own strategy</h2>
-<div style="max-height:500px;overflow-y:auto;border:1px solid #1a1a33;border-radius:8px;margin:5px 0">
-<div class="ar hdr"><span>#</span><span>AGENT</span><span>SYM</span><span>STYLE</span><span>WR</span><span>TRD</span><span>W/L</span><span>RR</span><span>PF</span><span>FIT</span></div>
-{all_rows}</div><div style="text-align:center;color:#888;font-size:9px;padding:2px">🖱️ Scroll to see all {ps['total']} agents | Hover any row for strategy details</div></div>
-
-
-top5_strats=""
-for i,s in enumerate(ss[:5]):
-    wr=s.winrate;win=s.wins;loss=s.trades-s.wins
-    p_clean={k:(round(v,4) if isinstance(v,float) else v) for k,v in s.params.items()}
-    strat_json=json.dumps({"agent":s.id,"symbol":s.id.split("_")[1] if len(s.id.split("_"))>1 else "?","winrate":wr,"trades":s.trades,"wins":win,"losses":loss,"pf":s.pf,"fitness":s.fitness,"rr":"1:"+str(int(p_clean.get("rr_ratio",0))),"signal_threshold":p_clean.get("signal_threshold","?"),"trailing_stop":p_clean.get("trailing_stop","?"),"indicators":p_clean.get("_indicators",[]),"parameters":p_clean},indent=2)
-    top5_strats+=f'''<div class="cc" style="cursor:pointer;margin:4px 0" onclick="var t=this.querySelector('pre');t.style.display=t.style.display==='none'?'block':'none'">
-<span class="ccn" style="color:#0f0">#{i+1} {s.id[-12:]} — WR:{wr:.0f}% | Trades:{s.trades} | 1:{int(p_clean.get('rr_ratio',0))} | PF:{s.pf:.1f}</span>
-<pre style="display:none;background:#000;color:#0f0;padding:8px;border-radius:4px;font-size:9px;margin-top:5px;white-space:pre-wrap;max-height:200px;overflow-y:auto">{strat_json}</pre></div>'''
-
-<div class="sec"><h2>📋 TOP 5 STRATEGIES (Click to expand → Copy JSON)</h2>{top5_strats}</div>
-<div class="sec"><h2>📊 {COLONY_ID} STATS</h2><div class="sr">
-<div class="sb"><div class="num">{ps['total']}</div><div class="lbl">Agents</div></div>
-<div class="sb"><div class="num">{ps['gen']}</div><div class="lbl">Generations</div></div>
-<div class="sb"><div class="num">{ps['best_wr']:.0f}%</div><div class="lbl">Best WR</div></div>
-<div class="sb"><div class="num">{ps['avg_wr']:.0f}%</div><div class="lbl">Avg WR</div></div>
-<div class="sb"><div class="num">{ps['above_70']}</div><div class="lbl">≥70% WR</div></div>
-<div class="sb"><div class="num">{ps['above_80']}</div><div class="lbl">≥80% WR</div></div>
-<div class="sb"><div class="num">{ps['above_90']}</div><div class="lbl">≥90% WR</div></div>
-<div class="sb"><div class="num">{ps['best_fit']:.3f}</div><div class="lbl">Best Fitness</div></div>
-</div></div>
-
-<div class="ft">🏛️ AI Trading Civilization | {c_total} Colonies | 1000+ Agents each | GitHub Synced | Duplicate Space → auto-merge<br>
-How to add colony: Duplicate this Space → set COLONY_ID=colony-X → Factory reboot → auto-connects!</div>
-</body></html>"""
-
-with gr.Blocks(title="🏛️ AI Trading Civilization",theme=gr.themes.Soft(),css="footer{display:none!important}") as demo:
-    gr.HTML(dashboard,every=8)
-
-demo.queue(max_size=5)
-demo.launch(server_name="0.0.0.0",server_port=7860,share=False,quiet=True)
+demo.queue(max_size=2)
+demo.launch(server_name="0.0.0.0", server_port=7860, share=False, quiet=True)
