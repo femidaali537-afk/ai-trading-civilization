@@ -11,13 +11,19 @@ This project simulates a "civilization" of **100 AI trading agents** that contin
 ### Key Features
 
 - **100 Agents** with genetic algorithm-style evolution
-- **Flexible Risk-Reward** ratios from **1:1 to 1:20**
-- **Continuous backtesting** (~every 10 seconds)
+- **Fixed Risk-Reward per strategy** (1:3 to 1:20) — every strategy uses the same RR for all its trades
+- **Continuous backtesting** (~every 10 seconds) on up to **1 YEAR** of real market data
 - **Rich Gradio dashboard** with live win rates, PNL, fitness, indicators, and full strategy details
 - **Automatic GitHub saving** of high-winrate (≥80% WR) strategies to the `high_winrate_strategies/` folder
 - **Crash-proof & stable** — extensive error handling and recovery
-- **Technical indicators**: RSI, SMA, EMA, ATR, Bollinger Bands, MACD, Stochastic
-- **Lightweight & efficient** — works with real Yahoo Finance data or synthetic fallback
+- **33+ Indicators** including full SMC, Price Action & Liquidity concepts:
+  - Classic: RSI, MACD, Supertrend, ADX, Keltner, Donchian, HMA, etc.
+  - Smart Money (SMC): Break of Structure (BOS), Order Blocks, Fair Value Gaps (FVG), Liquidity Sweeps
+  - Price Action: Engulfing, Pinbar, Inside Bar
+  - Multi-timeframe support: **1m, 3m, 5m, 15m**
+- **Real Data First**: Pulls up to **1 year** of real Yahoo Finance data (1m/3m/5m/15m)
+  - Falls back to synthetic data only if Yahoo returns nothing
+  - Multi-timeframe backtesting and signal generation
 
 ## 📁 Repository Structure
 
@@ -60,7 +66,7 @@ python app.py
 
 Go to **http://localhost:7860** (or the URL shown in terminal).
 
-The dashboard updates live every ~8 seconds and shows:
+The dashboard updates live every ~8 seconds using **1 year of real data** (or max available) across 1m/3m/5m/15m and shows:
 - Current prices (XAUUSD / BTC)
 - Top agents with win rate, PNL, profit factor, RR, indicators
 - Evolution generations
