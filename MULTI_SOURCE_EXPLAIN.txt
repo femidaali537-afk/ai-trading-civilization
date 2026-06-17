@@ -1,0 +1,66 @@
+✅ MULTIPLE REAL DATA SOURCES ADDED (Pushed)
+
+Repository: https://github.com/femidaali537-afk/ai-trading-civilization
+
+=== WHY YAHOO WAS THE STARTING POINT ===
+- Completely free, no API key needed
+- Works decently for both XAUUSD (Gold) and BTC-USD
+- Easy to use via yfinance
+- But has limitations:
+  * 1m/3m data is limited (often only last 7-30 days)
+  * Sometimes slow or incomplete for crypto
+  * Not the best source for high-frequency crypto data
+
+=== NOW WE HAVE MULTIPLE SOURCES (Priority Order) ===
+
+1. **Yahoo Finance** (Primary - still first)
+   - Best free option for XAUUSD=X (Gold futures)
+   - Good for BTC-USD too
+   - No key required
+
+2. **CCXT Exchanges** (Second - very strong)
+   - Binance, Kraken, Coinbase (free)
+   - Excellent for BTC-USD (crypto)
+   - Also supports some forex pairs (including XAU/USD on some exchanges)
+   - Very reliable OHLCV data
+   - Rate limited but solid
+
+3. **Polygon.io** (Third - premium quality)
+   - Extremely clean and complete data
+   - Supports stocks, forex, crypto
+   - Free tier available (limited calls)
+   - Set environment variable: POLYGON_API_KEY=your_key
+   - If key not set → automatically skipped
+
+4. **High-Quality Synthetic** (Last resort only)
+   - Only used when ALL real sources fail to return data
+   - Realistic random walk based on current price levels
+
+=== HOW IT WORKS NOW ===
+In DataFetcher.fetch():
+- Tries Yahoo first
+- If no data → tries CCXT (multiple exchanges)
+- If still no data + you have Polygon key → tries Polygon
+- Only then falls back to synthetic
+
+This greatly increases the chance of getting real 1-year + multi-TF data for both symbols.
+
+=== TO GET MAXIMUM REAL DATA ===
+
+For best results, get a free Polygon.io key:
+1. Go to https://polygon.io/
+2. Sign up (free)
+3. Copy your API key
+4. Run with:
+   export POLYGON_API_KEY=your_key_here
+   python app.py
+
+CCXT is already active for crypto (BTC will be very strong from Binance etc.)
+
+=== CURRENT REQUIREMENTS ===
+ccxt>=4.0.0     ← for Binance/Kraken/Coinbase
+requests>=2.31.0
+yfinance
+aiohttp
+etc.
+
