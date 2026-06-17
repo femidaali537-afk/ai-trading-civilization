@@ -1,24 +1,24 @@
 {
   "id": "colony-1_088",
-  "winrate": 72.6,
-  "trades": 164,
-  "pnl": 5777,
+  "winrate": 73.7,
+  "trades": 167,
+  "pnl": 6034,
   "params": {
-    "rr_ratio": 8,
-    "lookback_fast": 5,
-    "lookback_slow": 7,
-    "entry_threshold": 0.0011,
-    "atr_mult": 1.41
+    "rr_ratio": 14,
+    "lookback_fast": 6,
+    "lookback_slow": 10,
+    "entry_threshold": 0.003,
+    "atr_mult": 1.47
   },
-  "fitness": 2.1648,
-  "saved_at": "2026-06-17T12:16:17.038720",
+  "fitness": 2.2378,
+  "saved_at": "2026-06-17T16:38:23.498009",
   "recent_mistakes": [
+    "SL: stopped out",
+    "SL: stopped out",
+    "SL: stopped out",
+    "SL: stopped out",
     "reversed after entry",
-    "SL: stopped out",
-    "SL: stopped out",
-    "SL: stopped out",
-    "SL: stopped out",
-    "SL: stopped out",
+    "reversed after entry",
     "SL: stopped out",
     "Too many SLs -> lowered RR"
   ]
