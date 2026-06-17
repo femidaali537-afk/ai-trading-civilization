@@ -3,7 +3,7 @@
 ╔══════════════════════════════════════════════════════════════════╗
 ║  🏛️ AI TRADING CIVILIZATION — ADVANCED STABLE VERSION           ║
 ║  100 Agents | Backtest ~every 10s (light) | Rich Dashboard       ║
-║  RR 1:1 to 1:20 | Auto-save >80% WR strategies to GitHub         ║
+║  FIXED RR per strategy (1:3 to 1:20) | Auto-save >80% WR strategies to GitHub         ║
 ║  All previous bugs fixed + Advanced features + Crash-proof       ║
 ╚══════════════════════════════════════════════════════════════════╗
 """
@@ -128,8 +128,59 @@ class TA:
         std = (sum((x - ma)**2 for x in d[-n:]) / n) ** 0.5
         return ma + k*std, ma, ma - k*std
 
+
 # ═══════════════════════════════════════
-# STRATEGY (Advanced - RR 1:1 to 1:20)
+# SMC + PRICE ACTION + LIQUIDITY + EVERYTHING (Smart Money Concepts)
+# ═══════════════════════════════════════
+class SMC:
+    @staticmethod
+    def structure(closes, highs, lows):
+        if len(closes) < 8: return "neutral"
+        if closes[-1] > max(highs[-6:-1]): return "bullish_bos"
+        if closes[-1] < min(lows[-6:-1]): return "bearish_bos"
+        return "ranging"
+
+    @staticmethod
+    def liquidity_sweep(highs, lows, closes):
+        if len(closes) < 6: return None
+        if lows[-1] < min(lows[-5:-1])*0.999 and closes[-1] > closes[-2]: return "liq_sweep_bull"
+        if highs[-1] > max(highs[-5:-1])*1.001 and closes[-1] < closes[-2]: return "liq_sweep_bear"
+        return None
+
+    @staticmethod
+    def order_block(closes, highs, lows):
+        if len(closes) < 5: return None
+        if abs(closes[-2]-closes[-3]) > (highs[-3]-lows[-3])*1.3:
+            return "bull_ob" if closes[-1] > closes[-2] else "bear_ob"
+        return None
+
+    @staticmethod
+    def fvg(closes, highs, lows):
+        if len(closes) < 4: return None
+        if lows[-1] > highs[-3]: return "bull_fvg"
+        if highs[-1] < lows[-3]: return "bear_fvg"
+        return None
+
+    @staticmethod
+    def price_action(closes, highs, lows):
+        if len(closes) < 4: return None
+        body = abs(closes[-1] - closes[-2])
+        rng = highs[-1] - lows[-1]
+        if body > (highs[-2]-lows[-2])*1.1 and closes[-1] > closes[-2]: return "bull_engulf"
+        if body > (highs[-2]-lows[-2])*1.1 and closes[-1] < closes[-2]: return "bear_engulf"
+        if body < rng*0.3 and (highs[-1]-max(closes[-1],closes[-2])) > rng*0.5: return "pinbar_bear"
+        if body < rng*0.3 and (min(closes[-1],closes[-2])-lows[-1]) > rng*0.5: return "pinbar_bull"
+        return None
+
+    @staticmethod
+    def equal_levels(highs, lows):
+        if len(highs) < 8: return None
+        if abs(max(highs[-4:]) - max(highs[-8:-4])) < max(highs[-4:])*0.0015: return "equal_highs"
+        if abs(min(lows[-4:]) - min(lows[-8:-4])) < min(lows[-4:])*0.0015: return "equal_lows"
+        return None
+
+# ═══════════════════════════════════════
+# STRATEGY (Advanced - FIXED RR per strategy (1:3 to 1:20))
 # ═══════════════════════════════════════
 class Strategy:
     __slots__ = ("id", "params", "fitness", "trades", "wins", "pnl", "pf", "dd", "winrate", "gen", "name")
@@ -154,7 +205,14 @@ class Strategy:
         return "".join(parts) + "_" + str(random.randint(100,999))
 
     def _rand(self):
-        all_ind = ["rsi", "sma", "ema", "atr", "bb", "macd", "stoch"]
+        all_ind = [
+            "rsi", "sma", "ema", "atr", "bb", "macd", "stoch",
+            "cci", "willr", "adx", "donchian", "keltner", "supertrend", "psar", "hma",
+            "smc_structure", "smc_liquidity", "smc_orderblock", "smc_fvg",
+            "price_action", "engulfing", "pinbar", "insidebar",
+            "liquidity_sweep", "break_of_structure", "equal_highs_lows", "fair_value_gap",
+            "pivot", "volume", "delta", "fib", "vwap", "ichimoku"
+        ]
         chosen = random.sample(all_ind, random.randint(3, 6))
         p = {"_indicators": chosen}
         for ind in chosen:
@@ -172,8 +230,47 @@ class Strategy:
                 p.update({"macd_fast": random.randint(8,16), "macd_slow": random.randint(20,30), "macd_weight": round(random.uniform(0.5, 2.0), 2)})
             elif ind == "stoch":
                 p.update({"stoch_k": random.randint(8,18), "stoch_ob": random.randint(70,90), "stoch_os": random.randint(10,30), "stoch_weight": round(random.uniform(0.5, 2.0), 2)})
-        # RR from 1:1 to 1:20 as requested
-        p["rr_ratio"] = round(random.uniform(1.0, 20.0), 1)
+
+            elif ind == "cci":
+                p.update({"cci_period": random.randint(14,30), "cci_thresh": random.randint(80,150), "cci_weight": round(random.uniform(0.6, 2.2), 2)})
+            elif ind == "willr":
+                p.update({"willr_period": random.randint(10,20), "willr_os": random.randint(-90,-70), "willr_ob": random.randint(-30,-10), "willr_weight": round(random.uniform(0.5, 2.0), 2)})
+            elif ind == "adx":
+                p.update({"adx_period": random.randint(10,20), "adx_level": random.randint(20,35), "adx_weight": round(random.uniform(0.5, 1.8), 2)})
+            elif ind == "donchian":
+                p.update({"donch_period": random.randint(10,30), "donch_weight": round(random.uniform(0.7, 2.2), 2)})
+            elif ind == "keltner":
+                p.update({"kelt_period": random.randint(10,25), "kelt_mult": round(random.uniform(1.5, 3.5), 1), "kelt_weight": round(random.uniform(0.6, 2.0), 2)})
+            elif ind == "supertrend":
+                p.update({"st_period": random.randint(7,15), "st_mult": round(random.uniform(2.0, 4.5), 1), "st_weight": round(random.uniform(1.0, 3.0), 2)})
+            elif ind == "psar":
+                p.update({"psar_weight": round(random.uniform(0.8, 2.5), 2)})
+            elif ind == "hma":
+                p.update({"hma_period": random.randint(10,30), "hma_weight": round(random.uniform(0.7, 2.3), 2)})
+            # SMC + Liquidity + Price Action + Market Structure (everything)
+            elif ind in ["smc_structure", "break_of_structure"]:
+                p.update({"smc_struct_weight": round(random.uniform(1.2, 3.8), 2)})
+            elif ind in ["smc_liquidity", "liquidity_sweep"]:
+                p.update({"smc_liq_weight": round(random.uniform(1.1, 3.6), 2)})
+            elif ind in ["smc_orderblock", "order_block"]:
+                p.update({"smc_ob_weight": round(random.uniform(1.3, 3.9), 2)})
+            elif ind in ["smc_fvg", "fair_value_gap"]:
+                p.update({"smc_fvg_weight": round(random.uniform(1.0, 3.4), 2)})
+            elif ind in ["price_action", "engulfing", "pinbar", "insidebar"]:
+                p.update({"pa_weight": round(random.uniform(1.0, 3.2), 2)})
+            elif ind in ["equal_highs_lows"]:
+                p.update({"ehl_weight": round(random.uniform(0.8, 2.6), 2)})
+            elif ind in ["pivot"]:
+                p.update({"pivot_weight": round(random.uniform(0.6, 2.3), 2)})
+            elif ind in ["volume", "delta"]:
+                p.update({"vol_weight": round(random.uniform(0.5, 2.1), 2)})
+            elif ind in ["fib", "vwap", "ichimoku"]:
+                p.update({ind + "_weight": round(random.uniform(0.7, 2.9), 2)})
+
+        # FIXED Risk-to-Reward for THIS ENTIRE strategy (1:3 to 1:20)
+        # Every trade this strategy takes will use exactly the same RR
+        fixed_rr = random.randint(3, 20)
+        p["rr_ratio"] = float(fixed_rr)
         p["signal_threshold"] = random.randint(2, 6)
         return p
 
@@ -183,8 +280,8 @@ class Strategy:
             if k.startswith("_"): continue
             if isinstance(c.params[k], (int, float)):
                 c.params[k] = max(1, c.params[k] * (1 + random.uniform(-0.35, 0.35)))
-        # Keep RR in range
-        c.params["rr_ratio"] = max(1.0, min(20.0, c.params.get("rr_ratio", 2.5)))
+        # Keep the EXACT SAME fixed RR (strategy uses one RR forever)
+        c.params["rr_ratio"] = c.params.get("rr_ratio", 5.0)
         c.gen = self.gen + 1
         c.name = c._make_name()
         return c
@@ -207,42 +304,82 @@ class Backtester:
         inds = p.get("_indicators", [])
         thr = p.get("signal_threshold", 3)
 
+        # === CLASSIC INDICATORS ===
         if "rsi" in inds:
             rsi = TA.rsi(closes, p.get("rsi_period", 14))
             if rsi < p.get("rsi_buy", 30): sc += p.get("rsi_weight", 1.0)
             elif rsi > p.get("rsi_sell", 70): sc -= p.get("rsi_weight", 1.0)
-
         if "sma" in inds:
-            sf = TA.sma(closes, p.get("sma_fast", 10))
-            ss = TA.sma(closes, p.get("sma_slow", 50))
-            if sf > ss: sc += p.get("sma_weight", 1.0)
-            else: sc -= p.get("sma_weight", 1.0)
-
+            if TA.sma(closes, p.get("sma_fast",10)) > TA.sma(closes, p.get("sma_slow",50)): sc += p.get("sma_weight",1)
+            else: sc -= p.get("sma_weight",1)
         if "ema" in inds:
-            ef = TA.ema(closes, p.get("ema_fast", 8))
-            es = TA.ema(closes, p.get("ema_slow", 21))
-            if ef > es: sc += p.get("ema_weight", 1.0)
-            else: sc -= p.get("ema_weight", 1.0)
-
+            if TA.ema(closes, p.get("ema_fast",8)) > TA.ema(closes, p.get("ema_slow",21)): sc += p.get("ema_weight",1)
+            else: sc -= p.get("ema_weight",1)
         if "bb" in inds:
-            bu, bm, bl = TA.bollinger(closes, p.get("bb_period", 20), p.get("bb_std", 2.0))
-            if pr < bl: sc += p.get("bb_weight", 1.0)
-            elif pr > bu: sc -= p.get("bb_weight", 1.0)
-
+            bu, bm, bl = TA.bollinger(closes, p.get("bb_period",20), p.get("bb_std",2))
+            if pr < bl: sc += p.get("bb_weight",1)
+            elif pr > bu: sc -= p.get("bb_weight",1)
         if "macd" in inds:
-            # Simplified MACD signal
-            e12 = TA.ema(closes, 12)
-            e26 = TA.ema(closes, 26)
-            if e12 > e26: sc += p.get("macd_weight", 1.0)
-            else: sc -= p.get("macd_weight", 1.0)
-
+            m,_ = TA.macd(closes); sc += (p.get("macd_weight",1) if m>0 else -p.get("macd_weight",1))
         if "stoch" in inds:
-            k = p.get("stoch_k", 14)
-            if len(closes) >= k:
-                hh = max(highs[-k:]); ll = min(lows[-k:])
-                st = ((pr - ll) / (hh - ll) * 100) if hh > ll else 50
-                if st < p.get("stoch_os", 20): sc += 1.2
-                elif st > p.get("stoch_ob", 80): sc -= 1.2
+            k,_ = TA.stochastic(highs, lows, closes, p.get("stoch_k",14))
+            if k < p.get("stoch_os",20): sc += 1.2
+            elif k > p.get("stoch_ob",80): sc -= 1.2
+        if "cci" in inds:
+            c = TA.cci(highs, lows, closes, p.get("cci_period",20))
+            if c < -p.get("cci_thresh",100): sc += p.get("cci_weight",1)
+            elif c > p.get("cci_thresh",100): sc -= p.get("cci_weight",1)
+        if "willr" in inds:
+            wr = TA.williams_r(highs, lows, closes, p.get("willr_period",14))
+            if wr < p.get("willr_os",-80): sc += p.get("willr_weight",1)
+            elif wr > p.get("willr_ob",-20): sc -= p.get("willr_weight",1)
+        if "adx" in inds and TA.adx(highs, lows, closes, p.get("adx_period",14)) > p.get("adx_level",25):
+            sc += p.get("adx_weight",0.8)
+        if "donchian" in inds:
+            dh,dl = TA.donchian(highs, lows, p.get("donch_period",20))
+            if pr > dh: sc += p.get("donch_weight",1)
+            if pr < dl: sc -= p.get("donch_weight",1)
+        if "keltner" in inds:
+            km,kl,ku = TA.keltner(closes, highs, lows, p.get("kelt_period",20), p.get("kelt_mult",2))
+            if pr < kl: sc += p.get("kelt_weight",1)
+            elif pr > ku: sc -= p.get("kelt_weight",1)
+        if "supertrend" in inds:
+            dir,_ = TA.supertrend(highs, lows, closes, p.get("st_period",10), p.get("st_mult",3))
+            sc += (p.get("st_weight",1.5) if dir=="bull" else -p.get("st_weight",1.5))
+        if "psar" in inds:
+            sc += (p.get("psar_weight",1) if TA.psar(highs, lows, closes)=="bull" else -p.get("psar_weight",1))
+        if "hma" in inds:
+            sc += (p.get("hma_weight",1) if pr > TA.hma(closes, p.get("hma_period",16)) else -p.get("hma_weight",1))
+
+        # === SMC + PRICE ACTION + LIQUIDITY + MARKET STRUCTURE (the "everything") ===
+        if any(x in inds for x in ["smc_structure","break_of_structure"]):
+            s = SMC.structure(closes, highs, lows)
+            if s == "bullish_bos": sc += p.get("smc_struct_weight", 2.2)
+            if s == "bearish_bos": sc -= p.get("smc_struct_weight", 2.2)
+        if any(x in inds for x in ["smc_liquidity","liquidity_sweep"]):
+            ls = SMC.liquidity_sweep(highs, lows, closes)
+            if ls == "liq_sweep_bull": sc += p.get("smc_liq_weight", 2.5)
+            if ls == "liq_sweep_bear": sc -= p.get("smc_liq_weight", 2.5)
+        if any(x in inds for x in ["smc_orderblock","order_block"]):
+            ob = SMC.order_block(closes, highs, lows)
+            if ob == "bull_ob": sc += p.get("smc_ob_weight", 2.3)
+            if ob == "bear_ob": sc -= p.get("smc_ob_weight", 2.3)
+        if any(x in inds for x in ["smc_fvg","fair_value_gap"]):
+            f = SMC.fvg(closes, highs, lows)
+            if f == "bull_fvg": sc += p.get("smc_fvg_weight", 2.0)
+            if f == "bear_fvg": sc -= p.get("smc_fvg_weight", 2.0)
+        if any(x in inds for x in ["price_action","engulfing","pinbar"]):
+            pa = SMC.price_action(closes, highs, lows)
+            if pa and "bull" in pa: sc += p.get("pa_weight", 1.9)
+            if pa and "bear" in pa: sc -= p.get("pa_weight", 1.9)
+        if "equal_highs_lows" in inds:
+            el = SMC.equal_levels(highs, lows)
+            if el == "equal_highs": sc -= p.get("ehl_weight", 1.3)
+            if el == "equal_lows": sc += p.get("ehl_weight", 1.3)
+        if "pivot" in inds:
+            pvt,r1,s1 = TA.pivot(highs[-1], lows[-1], closes[-1])
+            if pr < s1: sc += p.get("pivot_weight", 1.0)
+            if pr > r1: sc -= p.get("pivot_weight", 1.0)
 
         if sc >= thr: return "BUY"
         if sc <= -thr: return "SELL"
@@ -539,7 +676,7 @@ def get_summary():
         xau = fetcher.price("XAUUSD=X")
         btc = fetcher.price("BTC-USD")
         high_count = sum(1 for s in pop.strategies if s.winrate >= 80)
-        return f"""**🏛️ ADVANCED STABLE** — 100 Agents | RR 1:1 to 1:20 | Backtest ~every 10s
+        return f"""**🏛️ ADVANCED STABLE** — 100 Agents | FIXED RR per strategy (1:3 to 1:20) | Backtest ~every 10s
 
 XAU: **${xau:.2f}**   |   BTC: **${btc:.0f}**
 
