@@ -12,6 +12,26 @@ import asyncio, json, os, random, sys, time, warnings, threading, base64
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any
+import aiohttp
+import asyncio
+from datetime import datetime, timedelta
+import random
+import time
+import os
+
+# Optional advanced data sources (graceful fallback if not installed)
+try:
+    import ccxt
+    HAS_CCXT = True
+except ImportError:
+    HAS_CCXT = False
+
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
 
 warnings.filterwarnings("ignore")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -46,51 +66,170 @@ class Log:
 # ═══════════════════════════════════════
 # DATA FETCHER (Stable & Light)
 # ═══════════════════════════════════════
+
 class DataFetcher:
     def __init__(self):
         self._yf = None
+        self._ccxt_exchanges = {}
+        self._last_fetch = {}
+        self._cache = {}
+        
+        # Primary: Yahoo Finance (free, good for stocks/forex/commodities)
         try:
             import yfinance as yf
             self._yf = yf
-            Log.i("📡 Yahoo Finance connected")
-        except:
-            Log.w("yfinance not available - using synthetic")
-        self._cache = {}
-        self._last_fetch = {}
+            Log.i("📡 Yahoo Finance (primary) connected")
+        except Exception:
+            Log.w("yfinance not available")
+
+        # Secondary: CCXT (crypto + some forex) - free & powerful
+        if HAS_CCXT:
+            try:
+                self._ccxt_exchanges = {
+                    "binance": ccxt.binance({"enableRateLimit": True}),
+                    "kraken": ccxt.kraken({"enableRateLimit": True}),
+                    "coinbase": ccxt.coinbase({"enableRateLimit": True}),
+                }
+                Log.i("📡 CCXT exchanges ready (Binance, Kraken, Coinbase)")
+            except Exception as e:
+                Log.w(f"CCXT init failed: {e}")
+
+        # Tertiary: Polygon.io (if API key present - excellent for stocks/forex)
+        self.polygon_key = os.getenv("POLYGON_API_KEY", "")
+
+        # Fallback sources
+        Log.i("📡 Multi-source data fetcher initialized (Yahoo + CCXT + Polygon + fallback)")
 
     async def fetch(self, symbol: str, tf: str = None, days: int = None):
         tf = tf or CFG.get("default_tf", "5m")
         days = days or CFG.get("backtest_days", 365)
         key = f"{symbol}:{tf}:{days}"
+        
         now = time.time()
-        if key in self._cache and now - self._last_fetch.get(key, 0) < 55:
+        if key in self._cache and now - self._last_fetch.get(key, 0) < 45:
             return self._cache[key]
-        data = await self._fetch_yahoo(symbol, tf, days)
+
+        # === PRIORITY ORDER: Try multiple real sources ===
+        data = None
+        
+        # 1. Try Yahoo Finance (best for XAUUSD=X, good for BTC-USD)
+        if not data:
+            data = await self._fetch_yahoo(symbol, tf, days)
+            if data:
+                Log.i(f"✅ Got data from Yahoo Finance ({len(data)} bars)")
+
+        # 2. Try CCXT (excellent for BTC-USD, also works for some forex)
+        if not data:
+            data = await self._fetch_ccxt(symbol, tf, days)
+            if data:
+                Log.i(f"✅ Got data from CCXT ({len(data)} bars)")
+
+        # 3. Try Polygon.io (if key is set - very clean data)
+        if not data and self.polygon_key:
+            data = await self._fetch_polygon(symbol, tf, days)
+            if data:
+                Log.i(f"✅ Got data from Polygon.io ({len(data)} bars)")
+
+        # 4. Last resort: high-quality synthetic
         if not data:
             data = self._synth(symbol, days, tf)
+            Log.w(f"⚠️ Using synthetic data for {symbol} {tf} (no real source returned data)")
+
         if data:
             self._cache[key] = data
             self._last_fetch[key] = now
         return data
 
     async def _fetch_yahoo(self, symbol, tf, days):
-        if not self._yf: return []
+        """Yahoo Finance - best for XAUUSD and BTC"""
+        if not self._yf:
+            return []
         try:
             yfs = {"XAUUSD=X": "GC=F", "BTC-USD": "BTC-USD"}.get(symbol, symbol)
             yf_interval = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m"}.get(tf or "5m", "5m")
-            # Request maximum possible real data (1m/3m have limits on Yahoo, usually 7-30 days)
             period = "max"
             df = self._yf.Ticker(yfs).history(period=period, interval=yf_interval)
-            if df.empty and (tf or "5m") not in ("5m", None):
+            if df.empty and tf not in ("5m", None):
                 df = self._yf.Ticker(yfs).history(period=period, interval="5m")
-            if df.empty: return []
+            if df.empty:
+                return []
             return [{"time": str(i.date()), "open": float(r.Open), "high": float(r.High),
-                     "low": float(r.Low), "close": float(r.Close)} for i,r in df.iterrows()]
+                     "low": float(r.Low), "close": float(r.Close)} for i, r in df.iterrows()]
         except Exception as e:
-            Log.w(f"Yahoo fetch failed for {tf}: {e}")
+            Log.w(f"Yahoo failed for {symbol} {tf}: {e}")
+            return []
+
+    async def _fetch_ccxt(self, symbol, tf, days):
+        """CCXT - excellent free crypto data (Binance etc) + some forex"""
+        if not HAS_CCXT or not self._ccxt_exchanges:
+            return []
+
+        # Map our symbols to exchange symbols
+        ccxt_symbol_map = {
+            "BTC-USD": "BTC/USDT",
+            "XAUUSD=X": "XAU/USD",   # Gold - supported on some exchanges
+        }
+        ex_symbol = ccxt_symbol_map.get(symbol, symbol.replace("=X", "/USD"))
+
+        tf_map = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m"}
+        ccxt_tf = tf_map.get(tf or "5m", "5m")
+
+        for ex_name, exchange in self._ccxt_exchanges.items():
+            try:
+                # Calculate since timestamp
+                since = int((datetime.utcnow() - timedelta(days=days or 365)).timestamp() * 1000)
+                
+                ohlcv = exchange.fetch_ohlcv(ex_symbol, timeframe=ccxt_tf, since=since, limit=1000)
+                if not ohlcv:
+                    continue
+
+                data = []
+                for row in ohlcv:
+                    data.append({
+                        "time": datetime.fromtimestamp(row[0]/1000).strftime("%Y-%m-%d"),
+                        "open": float(row[1]),
+                        "high": float(row[2]),
+                        "low": float(row[3]),
+                        "close": float(row[4])
+                    })
+                return data
+            except Exception as e:
+                continue  # try next exchange
+        return []
+
+    async def _fetch_polygon(self, symbol, tf, days):
+        """Polygon.io - premium quality (requires free API key)"""
+        if not self.polygon_key or not HAS_REQUESTS:
+            return []
+        try:
+            tf_map = {
+                "1m": "1/minute", "3m": "3/minute", "5m": "5/minute", "15m": "15/minute"
+            }
+            poly_tf = tf_map.get(tf or "5m", "5/minute")
+            ticker = {"BTC-USD": "X:BTCUSD", "XAUUSD=X": "C:GCUSD"}.get(symbol, symbol)
+
+            url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/{poly_tf}/1/{int((datetime.utcnow() - timedelta(days=days or 365)).timestamp()*1000)}/now"
+            url += f"?adjusted=true&sort=asc&limit=50000&apiKey={self.polygon_key}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=20) as resp:
+                    if resp.status != 200:
+                        return []
+                    js = await resp.json()
+                    results = js.get("results", [])
+                    data = []
+                    for r in results:
+                        data.append({
+                            "time": datetime.fromtimestamp(r["t"]/1000).strftime("%Y-%m-%d"),
+                            "open": r["o"], "high": r["h"], "low": r["l"], "close": r["c"]
+                        })
+                    return data
+        except Exception as e:
+            Log.w(f"Polygon failed: {e}")
             return []
 
     def _synth(self, symbol, days, tf="5m"):
+        """High quality synthetic fallback (only if ALL real sources fail)"""
         base = {"XAUUSD=X": 2650.0, "BTC-USD": 68000.0}.get(symbol, 100.0)
         tf_min = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}.get(tf or "5m", 5)
         bars = int((days or 365) * 24 * 60 / tf_min)
@@ -110,12 +249,11 @@ class DataFetcher:
     def price(self, symbol):
         tf = CFG.get("default_tf", "5m")
         k = f"{symbol}:{tf}:5"
-        if k in self._cache and self._cache[k]: return self._cache[k][-1]["close"]
+        if k in self._cache and self._cache[k]:
+            return self._cache[k][-1]["close"]
         return {"XAUUSD=X": 2650.0, "BTC-USD": 68000.0}.get(symbol, 100.0)
 
-# ═══════════════════════════════════════
-# TECHNICAL INDICATORS
-# ═══════════════════════════════════════
+
 class TA:
     @staticmethod
     def sma(d, n): return sum(d[-n:])/n if len(d)>=n else d[-1]
