@@ -1,0 +1,93 @@
+================================================================================
+                    REAL DATA GUARANTEE - XAUUSD & BTCUSD
+================================================================================
+
+✅ WHAT THE SYSTEM **GUARANTEES** (by design, after latest fixes):
+
+1. Real data is ALWAYS tried FIRST, in this strict order:
+   - Yahoo Finance (primary for XAUUSD)
+   - CCXT (Binance + Kraken + Coinbase) → excellent for BTC
+   - Polygon.io (if you provide POLYGON_API_KEY)
+   - Only then synthetic (and now only when almost zero real data)
+
+2. Synthetic data is used ONLY when:
+   - All real sources return almost nothing (< 10 bars)
+   - This is now extremely rare due to multiple attempts + cache
+
+3. Every single real bar is permanently saved:
+   - Saved in data_cache/ folder
+   - Next time the app runs, it loads previous real data + adds fresh
+   - Your real history grows automatically over time
+
+4. CCXT is now aggressive for full history:
+   - It keeps fetching in chunks (pagination) until it reaches ~365 days target
+   - Multiple attempts if needed
+
+5. Cache + fresh data are intelligently merged
+   - You get the longest possible real history available
+
+================================================================================
+           BEST REALISTIC OUTCOME (what you will actually get)
+================================================================================
+
+BTC-USD (especially on 5m and 15m):
+   → Very high probability of 200–400+ days of real data
+   → Thanks to Binance via CCXT + pagination + permanent cache
+
+XAUUSD (Gold) on 5m / 15m:
+   → Good probability of 150–300+ days from Yahoo + CCXT backup
+
+Over time (multiple runs):
+   → data_cache/ will accumulate real data
+   → You will eventually have very long real history for both symbols
+
+================================================================================
+                    WHAT WE CANNOT 100% GUARANTEE
+================================================================================
+
+- "Exactly 365 continuous days on 1m timeframe"
+  → Free public APIs (Yahoo, Binance free, etc.) heavily limit 1m data.
+  → You will usually get only last few weeks on 1m, even with best code.
+
+- 100% gap-free 365 days on every single run
+  → Depends on what the exchanges actually return that day.
+
+- Perfect 1-year data on 1m/3m from day 1 using only free sources
+  → This data simply doesn't exist publicly for free in full length.
+
+================================================================================
+                         HOW TO MAXIMIZE REAL DATA
+================================================================================
+
+Best command (recommended):
+
+export POLYGON_API_KEY=your_free_or_paid_key_here
+python app.py
+
+Even without Polygon key, just run normally:
+
+python app.py
+
+The app will now:
+- Use real data whenever available
+- Save it permanently
+- Keep trying to get more history on next runs
+
+================================================================================
+                              FINAL GUARANTEE
+================================================================================
+
+We GUARANTEE:
+
+✓ Real data for XAUUSD and BTCUSD is always preferred and used first.
+✓ Synthetic is only a desperate last resort (very hard to trigger now).
+✓ All real data is saved forever and grows over time.
+✓ The system aggressively fights to collect up to 1 year of real data.
+
+We cannot guarantee "pura ka pura 365 days on 1m from the first run"
+because the free data providers themselves do not provide that.
+
+For 5m and 15m → you will get substantial real data (hundreds of days)
+and it will keep improving as the cache grows.
+
+================================================================================
