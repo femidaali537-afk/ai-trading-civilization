@@ -1,0 +1,71 @@
+{
+  "saved_at": "2026-06-17T06:34:49.011709",
+  "colony": "colony-1",
+  "agent": {
+    "id": "colony-1_adv_098",
+    "name": "ERBK_150",
+    "params": {
+      "_indicators": [
+        "ema",
+        "rsi",
+        "bb",
+        "stoch"
+      ],
+      "ema_fast": 8,
+      "ema_slow": 28,
+      "ema_weight": 1.67,
+      "rsi_period": 25,
+      "rsi_buy": 16,
+      "rsi_sell": 82,
+      "rsi_weight": 1.05,
+      "bb_period": 16,
+      "bb_std": 1.98,
+      "bb_weight": 1.12,
+      "stoch_k": 8,
+      "stoch_ob": 74,
+      "stoch_os": 19,
+      "stoch_weight": 1.09,
+      "rr_ratio": 12.8,
+      "signal_threshold": 4
+    },
+    "fitness": 0.616,
+    "trades": 1,
+    "wins": 1,
+    "pnl": 4.1,
+    "pf": 1.0,
+    "dd": 0.0,
+    "winrate": 100.0,
+    "gen": 0
+  },
+  "full_params": {
+    "_indicators": [
+      "ema",
+      "rsi",
+      "bb",
+      "stoch"
+    ],
+    "ema_fast": 8,
+    "ema_slow": 28,
+    "ema_weight": 1.67,
+    "rsi_period": 25,
+    "rsi_buy": 16,
+    "rsi_sell": 82,
+    "rsi_weight": 1.05,
+    "bb_period": 16,
+    "bb_std": 1.98,
+    "bb_weight": 1.12,
+    "stoch_k": 8,
+    "stoch_ob": 74,
+    "stoch_os": 19,
+    "stoch_weight": 1.09,
+    "rr_ratio": 12.8,
+    "signal_threshold": 4
+  },
+  "market_backtest_summary": {
+    "winrate": 100.0,
+    "rr": 12.8,
+    "trades": 1,
+    "pnl": 4.1,
+    "pf": 1.0
+  }
+}
