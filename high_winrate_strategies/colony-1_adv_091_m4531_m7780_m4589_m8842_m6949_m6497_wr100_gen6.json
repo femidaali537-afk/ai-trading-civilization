@@ -1,0 +1,61 @@
+{
+  "saved_at": "2026-06-17T06:55:17.933213",
+  "colony": "colony-1",
+  "agent": {
+    "id": "colony-1_adv_091_m4531_m7780_m4589_m8842_m6949_m6497",
+    "name": "BMR_789",
+    "params": {
+      "_indicators": [
+        "bb",
+        "macd",
+        "rsi"
+      ],
+      "bb_period": 18.59726930063943,
+      "bb_std": 2.645706881180684,
+      "bb_weight": 1.2305402544731134,
+      "macd_fast": 14.94934201500054,
+      "macd_slow": 24.97782498165769,
+      "macd_weight": 1.0892924037539453,
+      "rsi_period": 10.235810711412933,
+      "rsi_buy": 58.55261080560713,
+      "rsi_sell": 135.81726671506468,
+      "rsi_weight": 1,
+      "rr_ratio": 10.843365370498441,
+      "signal_threshold": 1
+    },
+    "fitness": 0.632,
+    "trades": 2,
+    "wins": 2,
+    "pnl": 10.0,
+    "pf": 1.0,
+    "dd": 0.0,
+    "winrate": 100.0,
+    "gen": 6
+  },
+  "full_params": {
+    "_indicators": [
+      "bb",
+      "macd",
+      "rsi"
+    ],
+    "bb_period": 18.59726930063943,
+    "bb_std": 2.645706881180684,
+    "bb_weight": 1.2305402544731134,
+    "macd_fast": 14.94934201500054,
+    "macd_slow": 24.97782498165769,
+    "macd_weight": 1.0892924037539453,
+    "rsi_period": 10.235810711412933,
+    "rsi_buy": 58.55261080560713,
+    "rsi_sell": 135.81726671506468,
+    "rsi_weight": 1,
+    "rr_ratio": 10.843365370498441,
+    "signal_threshold": 1
+  },
+  "market_backtest_summary": {
+    "winrate": 100.0,
+    "rr": 10.843365370498441,
+    "trades": 2,
+    "pnl": 10.0,
+    "pf": 1.0
+  }
+}
