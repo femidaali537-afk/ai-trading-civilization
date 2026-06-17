@@ -141,60 +141,87 @@ class DataFetcher:
         return data
 
     async def _fetch_yahoo(self, symbol, tf, days):
-        """Yahoo Finance - best for XAUUSD and BTC"""
+        """Yahoo Finance - best free source for XAUUSD=X and decent for BTC-USD"""
         if not self._yf:
             return []
         try:
             yfs = {"XAUUSD=X": "GC=F", "BTC-USD": "BTC-USD"}.get(symbol, symbol)
             yf_interval = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m"}.get(tf or "5m", "5m")
-            period = "max"
-            df = self._yf.Ticker(yfs).history(period=period, interval=yf_interval)
+
+            # Request maximum possible history
+            df = self._yf.Ticker(yfs).history(period="max", interval=yf_interval)
+
             if df.empty and tf not in ("5m", None):
-                df = self._yf.Ticker(yfs).history(period=period, interval="5m")
+                df = self._yf.Ticker(yfs).history(period="max", interval="5m")
+
             if df.empty:
                 return []
-            return [{"time": str(i.date()), "open": float(r.Open), "high": float(r.High),
+
+            bars = [{"time": str(i.date()), "open": float(r.Open), "high": float(r.High),
                      "low": float(r.Low), "close": float(r.Close)} for i, r in df.iterrows()]
+
+            # Trim to requested days if we got more
+            if days and len(bars) > days * 300:  # rough
+                bars = bars[-(days * 300):]
+            return bars
         except Exception as e:
             Log.w(f"Yahoo failed for {symbol} {tf}: {e}")
             return []
 
     async def _fetch_ccxt(self, symbol, tf, days):
-        """CCXT - excellent free crypto data (Binance etc) + some forex"""
+        """CCXT - excellent free crypto data (Binance etc) + some forex.
+           This version properly paginates to get as much history as possible.
+        """
         if not HAS_CCXT or not self._ccxt_exchanges:
             return []
 
-        # Map our symbols to exchange symbols
         ccxt_symbol_map = {
             "BTC-USD": "BTC/USDT",
-            "XAUUSD=X": "XAU/USD",   # Gold - supported on some exchanges
+            "XAUUSD=X": "XAU/USD",
         }
         ex_symbol = ccxt_symbol_map.get(symbol, symbol.replace("=X", "/USD"))
 
         tf_map = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m"}
         ccxt_tf = tf_map.get(tf or "5m", "5m")
 
+        target_bars = int((days or 365) * 24 * 60 / {"1m":1, "3m":3, "5m":5, "15m":15}.get(ccxt_tf, 5))
+
         for ex_name, exchange in self._ccxt_exchanges.items():
             try:
-                # Calculate since timestamp
+                all_ohlcv = []
                 since = int((datetime.utcnow() - timedelta(days=days or 365)).timestamp() * 1000)
-                
-                ohlcv = exchange.fetch_ohlcv(ex_symbol, timeframe=ccxt_tf, since=since, limit=1000)
-                if not ohlcv:
+                limit = 1000
+
+                while len(all_ohlcv) < target_bars:
+                    ohlcv = exchange.fetch_ohlcv(ex_symbol, timeframe=ccxt_tf, since=since, limit=limit)
+                    if not ohlcv:
+                        break
+                    all_ohlcv.extend(ohlcv)
+                    since = ohlcv[-1][0] + 1  # move forward in time
+                    if len(ohlcv) < limit:
+                        break  # no more data
+
+                if not all_ohlcv:
                     continue
 
-                data = []
-                for row in ohlcv:
-                    data.append({
-                        "time": datetime.fromtimestamp(row[0]/1000).strftime("%Y-%m-%d"),
-                        "open": float(row[1]),
-                        "high": float(row[2]),
-                        "low": float(row[3]),
-                        "close": float(row[4])
-                    })
-                return data
+                # Dedup + sort + trim
+                seen = set()
+                cleaned = []
+                for row in sorted(all_ohlcv, key=lambda x: x[0]):
+                    if row[0] not in seen:
+                        seen.add(row[0])
+                        cleaned.append({
+                            "time": datetime.fromtimestamp(row[0]/1000).strftime("%Y-%m-%d"),
+                            "open": float(row[1]),
+                            "high": float(row[2]),
+                            "low": float(row[3]),
+                            "close": float(row[4])
+                        })
+                return cleaned[:target_bars]
+
             except Exception as e:
-                continue  # try next exchange
+                continue
+
         return []
 
     async def _fetch_polygon(self, symbol, tf, days):
