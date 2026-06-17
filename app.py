@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI Trading Civilization — ULTRA ACTIVE + SELF LEARNING
-- All 100 agents are ULTRA ACTIVE every cycle (no agent sleeps)
+SAVES FULL DETAILS: exact data_period (2025-06-17 to 2026-06-17), backtest_start/end, avg_win_pnl, avg_loss_pnl, trade_breakdown (win/loss only), notes etc.
 - Every agent learns from its own mistakes
 - Analyzes why a trade was wrong (SL vs reversal etc)
 - Adapts parameters (RR, lookbacks, thresholds) to improve
