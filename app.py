@@ -413,8 +413,9 @@ class Backtester:
                 is_bearish_engulfing = closes[i] < opens[i] and closes[i-1] > opens[i-1] and closes[i] < opens[i-1]
                 
                 # Advanced camarilla Pivot Points H3, H4, L3, L4 (lookback daily pivots)
-                prev_high = max(highs[i-lookback:i])
-                prev_low = min(lows[i-lookback:i])
+                lookback_val = strat.params["lookback"]
+                prev_high = max(highs[i-lookback_val:i])
+                prev_low = min(lows[i-lookback_val:i])
                 prev_close = closes[i-1]
                 cam_range = prev_high - prev_low
                 h4_pivot = prev_close + cam_range * 1.1 / 2
@@ -780,9 +781,14 @@ class Civilization:
             Log.w("No data fetched. Skipping cycle.")
             return
         
+        # Keep only the most recent 30 days of 1m bars (around 40,000 bars max) to prevent CPU starvation and 500 errors
+        backtest_data = data[-40000:] if len(data) > 40000 else data
+        
         # 1. Backtest all agents
         for a in self.agents:
-            Backtester.run(data, a)
+            Backtester.run(backtest_data, a)
+            # Yield control to the event loop occasionally to keep Gradio responsive
+            await asyncio.sleep(0.001)
         
         # 2. Save Elites
         for a in self.agents:
