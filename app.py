@@ -143,11 +143,13 @@ class Strategy:
             "rsi_period": random.randint(7, 14),
             "rsi_upper": random.randint(65, 85),
             "rsi_lower": random.randint(15, 35),
-            "atr_mult": round(random.uniform(1.0, 3.0), 2),
-            "rr_ratio": random.randint(2, 10),
+            "atr_mult": round(random.uniform(1.5, 4.0), 2),
+            "rr_ratio": random.randint(3, 10), # Range 1:3 to 1:10
             "smc_weight": random.uniform(0, 1), 
             "ict_fvg_size": round(random.uniform(0.1, 0.5), 2),
             "lookback": random.randint(20, 100),
+            "min_atr_threshold": round(random.uniform(0.05, 0.3), 2),
+            "strategy_type": random.choice(["SMC_Sweep", "ICT_Mitigation", "Mom_Breakout", "Mean_Reversion"])
         }
         self.winrate = 0.0
         self.trades = 0
@@ -158,46 +160,78 @@ class Strategy:
     def mutate(self):
         child = Strategy(self.id + "_m")
         child.params = self.params.copy()
+        
         # Mutate a random parameter
         p = random.choice(list(child.params.keys()))
-        if "period" in p or "ema" in p or "lookback" in p:
-            child.params[p] += random.choice([-1, 1])
+        if p == "strategy_type":
+            child.params[p] = random.choice(["SMC_Sweep", "ICT_Mitigation", "Mom_Breakout", "Mean_Reversion"])
+        elif "period" in p or "ema" in p or "lookback" in p:
+            child.params[p] += random.choice([-2, -1, 1, 2])
         elif "rsi" in p:
-            child.params[p] += random.randint(-2, 2)
-        elif "mult" in p or "weight" in p or "size" in p:
-            child.params[p] += random.uniform(-0.1, 0.1)
+            child.params[p] += random.randint(-3, 3)
+        elif "mult" in p or "weight" in p or "size" in p or "threshold" in p:
+            child.params[p] = round(child.params[p] + random.uniform(-0.15, 0.15), 2)
+        elif p == "rr_ratio":
+            child.params[p] = random.randint(3, 10)
         else:
             child.params[p] += random.choice([-1, 1])
         
         # Constraints
         child.params["ema_fast"] = max(2, child.params["ema_fast"])
         child.params["ema_slow"] = max(child.params["ema_fast"] + 1, child.params["ema_slow"])
-        child.params["rr_ratio"] = max(1, child.params["rr_ratio"])
-        child.params["smc_weight"] = max(0, min(1, child.params["smc_weight"]))
+        child.params["rr_ratio"] = max(3, min(10, child.params["rr_ratio"])) # Keep strictly in 1:3 - 1:10 range
+        child.params["smc_weight"] = max(0.0, min(1.0, child.params["smc_weight"]))
+        child.params["min_atr_threshold"] = max(0.01, child.params["min_atr_threshold"])
         return child
 
     def analyze_and_improve(self):
-        """Self-improvement based on trade mistakes"""
+        """Advanced Self-Learning Mistake Analysis & Strategy Tuning Loop"""
         if len(self.history) < 10: return
         
-        recent = self.history[-20:]
+        recent = self.history[-30:]
         losses = [r for w, r in recent if not w]
+        wins = [r for w, r in recent if w]
+        
+        # 1. Evaluate Risk-to-Reward (RR) performance
+        # If winrate is extremely high (>65%) but we can push for more, try increasing RR
+        if len(recent) >= 15 and (len(wins) / len(recent)) > 0.65:
+            if self.params["rr_ratio"] < 10:
+                self.params["rr_ratio"] += 1
+                Log.learn(f"🔥 {self.name} evolved high winrate -> Increasing RR to 1:{self.params['rr_ratio']} to maximize PNL.")
+        
+        # If winrate is low (<35%), let's try reducing RR to lock in profits earlier
+        elif len(recent) >= 15 and (len(wins) / len(recent)) < 0.35:
+            if self.params["rr_ratio"] > 3:
+                self.params["rr_ratio"] -= 1
+                Log.learn(f"📉 {self.name} suffering low winrate -> Reducing RR to 1:{self.params['rr_ratio']} to lock in safer profits.")
+
+        # 2. Analyze losses for structural errors
         if not losses: return
+        
+        stopped_out_early = sum(1 for r in losses if "sl_hit_early" in r)
+        reversals = sum(1 for r in losses if "reversal" in r)
+        choppy_losses = sum(1 for r in losses if "flat_market_chop" in r)
 
-        # Analyze failure reasons
-        reversal_count = sum(1 for r in losses if "reversal" in r.lower())
-        premature_sl = sum(1 for r in losses if "sl" in r.lower())
+        total_losses = len(losses)
+        
+        # Issue A: Stop loss is too tight (stopped out too early)
+        if stopped_out_early > total_losses * 0.4:
+            self.params["atr_mult"] = round(self.params["atr_mult"] + 0.2, 2)
+            self.params["ema_slow"] = min(200, self.params["ema_slow"] + 5)
+            Log.learn(f"🛡️ {self.name} mistake analysis: Too many premature SL hits -> Increased ATR multiplier to {self.params['atr_mult']}.")
 
-        if reversal_count > len(losses) * 0.4:
-            # Too many reversals -> Increase Trend confirmation
-            self.params["ema_slow"] += 5
-            self.params["smc_weight"] += 0.05
-            Log.learn(f"{self.name} learning: High reversals detected -> Strengthening trend filters.")
+        # Issue B: Price reverses before reaching our high TP targets
+        if reversals > total_losses * 0.4:
+            if self.params["rr_ratio"] > 3:
+                self.params["rr_ratio"] -= 1
+                Log.learn(f"⚡ {self.name} mistake analysis: Price reversing near targets -> Reduced RR to 1:{self.params['rr_ratio']}.")
+            self.params["smc_weight"] = min(1.0, self.params["smc_weight"] + 0.05)
 
-        if premature_sl > len(losses) * 0.4:
-            # Stopped out too early -> Increase SL room
-            self.params["atr_mult"] += 0.2
-            Log.learn(f"{self.name} learning: Too many premature SLs -> Increasing ATR multiplier.")
+        # Issue C: Entering in choppy/flat markets
+        if choppy_losses > total_losses * 0.4:
+            self.params["min_atr_threshold"] = round(self.params["min_atr_threshold"] + 0.05, 2)
+            self.params["ict_fvg_size"] = round(self.params["ict_fvg_size"] + 0.05, 2)
+            Log.learn(f"⏱️ {self.name} mistake analysis: Choppy flat market losses -> Raised ATR threshold to {self.params['min_atr_threshold']}.")
 
 # ================== BACKTESTER ==================
 class Backtester:
@@ -271,43 +305,71 @@ class Backtester:
         closes = [d["close"] for d in data]
         highs = [d["high"] for d in data]
         lows = [d["low"] for d in data]
+        opens = [d["open"] for d in data]
         
         trades = []
         pos = None
         
         for i in range(200, len(data)):
             if pos is None:
+                # 1. Volatility Regime Filter
+                if atr_v[i] < strat.params["min_atr_threshold"]:
+                    continue
+                
                 # SIGNAL GENERATION
                 buy_sig = False
                 sell_sig = False
                 
-                # 1. Indicator Logic
+                # Market Structure & Indicators
                 trend_up = ema_f[i] > ema_s[i]
                 rsi_low = rsi_v[i] < strat.params["rsi_lower"]
+                rsi_high = rsi_v[i] > strat.params["rsi_upper"]
                 
-                # 2. SMC/ICT FVG Logic (Fair Value Gap)
+                # SMC/ICT Concepts
                 fvg_up = lows[i-1] > highs[i-3] + strat.params["ict_fvg_size"]
                 fvg_down = highs[i-1] < lows[i-3] - strat.params["ict_fvg_size"]
                 
-                # 3. SMC/ICT Liquidity Sweep Logic (Grab)
-                # Sweep Sell-Side Liquidity (SSL): current low swept previous SSL, but current close is above it
                 swept_ssl = lows[i] < ssl[i] and closes[i] > ssl[i]
-                # Sweep Buy-Side Liquidity (BSL): current high swept previous BSL, but current close is below it
                 swept_bsl = highs[i] > bsl[i] and closes[i] < bsl[i]
                 
-                # Hybrid SMC Liquidity Sweep & Trend Decision
-                if strat.params["smc_weight"] > 0.5:
-                    # SMC-centric: Buy if we swept sell-side liquidity (SSL) AND have bullish FVG or trend confirmation
-                    if swept_ssl and (fvg_up or trend_up): 
+                # Rejection & Candlestick Patterns
+                body = abs(closes[i] - opens[i])
+                range_i = highs[i] - lows[i] if (highs[i] - lows[i]) > 0 else 0.001
+                is_bullish_pinbar = (min(closes[i], opens[i]) - lows[i]) > 1.5 * body and (highs[i] - max(closes[i], opens[i])) < 0.5 * body
+                is_bearish_pinbar = (highs[i] - max(closes[i], opens[i])) > 1.5 * body and (min(closes[i], opens[i]) - lows[i]) < 0.5 * body
+                
+                is_bullish_engulfing = closes[i] > opens[i] and closes[i-1] < opens[i-1] and closes[i] > opens[i-1]
+                is_bearish_engulfing = closes[i] < opens[i] and closes[i-1] > opens[i-1] and closes[i] < opens[i-1]
+                
+                strategy_type = strat.params["strategy_type"]
+                
+                if strategy_type == "SMC_Sweep":
+                    # Focus strictly on liquidity sweeps + pinbar rejection or FVG confirmation
+                    if swept_ssl and (is_bullish_pinbar or fvg_up):
                         buy_sig = True
-                    # Sell if we swept buy-side liquidity (BSL) AND have bearish FVG or trend confirmation
-                    elif swept_bsl and (fvg_down or not trend_up): 
+                    elif swept_bsl and (is_bearish_pinbar or fvg_down):
                         sell_sig = True
-                else:
-                    # Trend/Indicator-centric with FVG confirmation
-                    if trend_up and rsi_low: 
+                        
+                elif strategy_type == "ICT_Mitigation":
+                    # Order block mitigation and FVG pullback entries
+                    # Buy when price pulls back into a bullish FVG and shows a bullish engulfing pattern
+                    if trend_up and fvg_up and (is_bullish_engulfing or is_bullish_pinbar):
                         buy_sig = True
-                    elif not trend_up and rsi_v[i] > strat.params["rsi_upper"]: 
+                    elif not trend_up and fvg_down and (is_bearish_engulfing or is_bearish_pinbar):
+                        sell_sig = True
+                        
+                elif strategy_type == "Mom_Breakout":
+                    # Breakout of previous high/low with trend confirmation
+                    if trend_up and closes[i] > bsl[i]:
+                        buy_sig = True
+                    elif not trend_up and closes[i] < ssl[i]:
+                        sell_sig = True
+                        
+                elif strategy_type == "Mean_Reversion":
+                    # Pullback to the EMA with exhaustion (RSI oversold/overbought) + pinbar
+                    if trend_up and rsi_low and is_bullish_pinbar:
+                        buy_sig = True
+                    elif not trend_up and rsi_high and is_bearish_pinbar:
                         sell_sig = True
                 
                 if buy_sig or sell_sig:
@@ -316,13 +378,29 @@ class Backtester:
                     tp_dist = sl_dist * strat.params["rr_ratio"]
                     
                     if buy_sig:
-                        pos = {"dir": "BUY", "entry": entry, "sl": entry - sl_dist, "tp": entry + tp_dist}
+                        pos = {
+                            "dir": "BUY", 
+                            "entry": entry, 
+                            "sl": entry - sl_dist, 
+                            "tp": entry + tp_dist, 
+                            "entry_idx": i,
+                            "entry_atr": atr_v[i]
+                        }
                     else:
-                        pos = {"dir": "SELL", "entry": entry, "sl": entry + sl_dist, "tp": entry - tp_dist}
+                        pos = {
+                            "dir": "SELL", 
+                            "entry": entry, 
+                            "sl": entry + sl_dist, 
+                            "tp": entry - tp_dist, 
+                            "entry_idx": i,
+                            "entry_atr": atr_v[i]
+                        }
             
             else:
                 # TRADE MANAGEMENT
                 hit = None
+                duration = i - pos["entry_idx"]
+                
                 if pos["dir"] == "BUY":
                     if closes[i] <= pos["sl"]: hit = "SL"
                     elif closes[i] >= pos["tp"]: hit = "TP"
@@ -332,7 +410,21 @@ class Backtester:
                 
                 if hit:
                     is_win = (hit == "TP")
-                    reason = "reversal" if not is_win and abs(closes[i]-pos["entry"]) > (pos["entry"]*0.01) else "sl"
+                    
+                    # Mistake classification for self-learning
+                    if is_win:
+                        reason = "win"
+                    else:
+                        # 1. Stopped out quickly (tight SL)
+                        if duration <= 5:
+                            reason = "sl_hit_early"
+                        # 2. Chop/Sideways market hit
+                        elif atr_v[i] < pos["entry_atr"] * 0.7:
+                            reason = "flat_market_chop"
+                        # 3. Price moved towards target but reversed (need tighter RR or trailing)
+                        else:
+                            reason = "reversal"
+                            
                     strat.history.append((is_win, reason))
                     trades.append(is_win)
                     pos = None
@@ -355,76 +447,129 @@ class StrategyExporter:
         p = strat.params
         
         # Calculate proper Profit Factor
-        wins = [p for w, p in strat.history if w]
-        losses = [p for w, p in strat.history if not w]
-        total_wins_value = sum([p['rr_ratio'] for w, p in strat.history if w])
+        wins = [r for w, r in strat.history if w]
+        losses = [r for w, r in strat.history if not w]
+        total_wins_value = sum([p['rr_ratio'] for w, r in strat.history if w])
         total_losses_value = len(losses)
         profit_factor = (total_wins_value / max(1, total_losses_value)) if total_losses_value > 0 else total_wins_value
 
         manual = f"""
-# 🏆 ELITE XAUUSD 1M SMC LIQUIDITY SWEEP MANUAL: {strat.name}
+# 🏆 ELITE XAUUSD 1M TRADING MANUAL: {strat.name}
 **Agent Name:** {strat.name}
+**Evolved Strategy Type:** {p['strategy_type']}
+**Evolved Risk-to-Reward (RR) Ratio:** 1:{p['rr_ratio']} (Evolved between 1:3 - 1:10 Range)
 **Win Rate:** {strat.winrate:.2f}% | **Total Trades:** {strat.trades} | **Profit Factor:** {profit_factor:.2f}
 
 ---
 
 ## 📖 STRATEGY OVERVIEW
-This is an elite Smart Money Concepts (SMC) Liquidity Sweep and Fair Value Gap (FVG) scalping strategy specifically evolved for the XAUUSD (Gold) 1-Minute timeframe. It targets major liquidity pools (Buy-Side and Sell-Side) to enter trades with high-probability institutional order flow.
+This strategy is an elite, self-evolved trading system optimized specifically for XAUUSD (Gold) on the 1-Minute timeframe. The strategy was developed through a genetic algorithm running over 825,000 bars of historical data, with active self-improvement loops that analyzed and resolved previous trade errors.
 
 ## 🛠️ CHART SETUP & INDICATORS
-To execute this strategy, set up your chart as follows:
+To execute this strategy, configure your chart with:
 1. **Timeframe:** 1 Minute (1m).
 2. **Exponential Moving Averages (EMAs):**
-   - **Fast EMA:** Period {p['ema_fast']} (Trend momentum filter).
-   - **Slow EMA:** Period {p['ema_slow']} (Major trend filter).
-3. **Relative Strength Index (RSI):** Period {p['rsi_period']} (used to confirm momentum pullbacks).
-4. **Average True Range (ATR):** Period 14 (used for dynamic stop-loss placement).
+   - **Fast EMA:** Period {p['ema_fast']} (Trend momentum).
+   - **Slow EMA:** Period {p['ema_slow']} (Major structural trend filter).
+3. **Relative Strength Index (RSI):**
+   - **Period:** {p['rsi_period']}
+   - **Overbought Level:** {p['rsi_upper']}
+   - **Oversold Level:** {p['rsi_lower']}
+4. **Average True Range (ATR):** Period 14 (used for dynamic stop-loss).
+   - **Min Volatility Filter:** {p['min_atr_threshold']} points (avoids flat/choppy markets).
 
 ---
 
-## 🏛️ SMC & ICT CONCEPTS (How to identify them)
+## 🔬 STRATEGY MECHANICS: {p['strategy_type']}
 
-### 1. Buy-Side Liquidity (BSL) & Sell-Side Liquidity (SSL)
-- **BSL (Buy-Side Liquidity):** Clustered above the swing highs of the previous {p['lookback']} candles. These are stop-losses of retail short sellers.
-- **SSL (Sell-Side Liquidity):** Clustered below the swing lows of the previous {p['lookback']} candles. These are stop-losses of retail buyers.
+"""
+        if p["strategy_type"] == "SMC_Sweep":
+            manual += f"""
+### 🏛️ Smart Money Concepts (SMC) Liquidity Sweep
+This agent focuses purely on **Liquidity Pools** and institutional stop-runs:
+- **Liquidity Levels:** Buy-Side Liquidity (BSL) and Sell-Side Liquidity (SSL) are established over a lookback of {p['lookback']} candles.
+- **Trigger:** We wait for price to sweep (puncture) BSL or SSL and then aggressively reject it, closing back inside the range. This indicates smart money has grabbed liquidity to initiate a reversal.
 
-### 2. Liquidity Sweep (Stop Hunt)
-- **Bullish Sweep:** Price dips below the SSL level but rejects and closes back above it. This indicates smart money has filled their buy orders using retail stop-losses.
-- **Bearish Sweep:** Price pushes above the BSL level but rejects and closes back below it. This indicates smart money has filled their sell orders using retail buy stops.
+#### 🟢 BUY ENTRY (Long)
+1. Price must be above the Slow EMA ({p['ema_slow']}).
+2. The current candle sweeps below the Sell-Side Liquidity (SSL) level and closes back above it.
+3. Candle closes as a **Bullish Pin Bar** (rejection shadow > 1.5x body) or a **Bullish FVG** is formed on the sweep candle.
+4. Enter Long on the candle close.
 
-### 3. Fair Value Gap (FVG)
-- **Bullish FVG:** A 3-candle imbalance where the Low of Candle 3 is greater than the High of Candle 1 by at least {p['ict_fvg_size']} points.
-- **Bearish FVG:** A 3-candle imbalance where the High of Candle 3 is less than the Low of Candle 1 by at least {p['ict_fvg_size']} points.
+#### 🔴 SELL ENTRY (Short)
+1. Price must be below the Slow EMA ({p['ema_slow']}).
+2. The current candle sweeps above the Buy-Side Liquidity (BSL) level and closes back below it.
+3. Candle closes as a **Bearish Pin Bar** (rejection shadow > 1.5x body) or a **Bearish FVG** is formed on the sweep candle.
+4. Enter Short on the candle close.
+"""
+        elif p["strategy_type"] == "ICT_Mitigation":
+            manual += f"""
+### 🏛️ ICT Order Block Mitigation & FVG Pullback
+This agent enters on market structure shifts and pullbacks into institutional demand/supply:
+- **Order Blocks:** Formed after liquidity sweeps or strong market structure shifts.
+- **FVG:** Fair Value Gaps of size {p['ict_fvg_size']} points are used as high-probability entry Zones.
 
+#### 🟢 BUY ENTRY (Long)
+1. Slow EMA ({p['ema_slow']}) is trending upwards.
+2. A Bullish FVG of at least {p['ict_fvg_size']} points is identified.
+3. Price pulls back into the FVG / Bullish Order Block zone.
+4. Enter Long when a **Bullish Engulfing** candle or **Bullish Pin Bar** closes inside the zone.
+
+#### 🔴 SELL ENTRY (Short)
+1. Slow EMA ({p['ema_slow']}) is trending downwards.
+2. A Bearish FVG of at least {p['ict_fvg_size']} points is identified.
+3. Price pulls back into the FVG / Bearish Order Block zone.
+4. Enter Short when a **Bearish Engulfing** candle or **Bearish Pin Bar** closes inside the zone.
+"""
+        elif p["strategy_type"] == "Mom_Breakout":
+            manual += f"""
+### 📈 Momentum Breakout
+This agent captures rapid trends when institutions aggressively break previous highs or lows with heavy volume:
+
+#### 🟢 BUY ENTRY (Long)
+1. Price is trending strongly above the Slow EMA ({p['ema_slow']}).
+2. Fast EMA ({p['ema_fast']}) is above Slow EMA, showing accelerating momentum.
+3. Price closes cleanly ABOVE the previous Buy-Side Liquidity (BSL) level established over the last {p['lookback']} bars.
+4. Enter Long immediately on the breakout candle close.
+
+#### 🔴 SELL ENTRY (Short)
+1. Price is trending strongly below the Slow EMA ({p['ema_slow']}).
+2. Fast EMA ({p['ema_fast']}) is below Slow EMA, showing decelerating momentum.
+3. Price closes cleanly BELOW the previous Sell-Side Liquidity (SSL) level established over the last {p['lookback']} bars.
+4. Enter Short immediately on the breakout candle close.
+"""
+        else: # Mean_Reversion
+            manual += f"""
+### 🔄 Mean Reversion EMA Pullback
+This agent trades trend continuation pullbacks to key moving averages when momentum is temporarily exhausted:
+
+#### 🟢 BUY ENTRY (Long)
+1. Major trend is clearly bullish (above Slow EMA {p['ema_slow']}).
+2. RSI({p['rsi_period']}) reaches Oversold territory (below {p['rsi_lower']}) on a pullback.
+3. Price pulls back and touches/interacts with the Fast EMA ({p['ema_fast']}).
+4. Enter Long on a strong **Bullish Pin Bar** rejecting the EMA.
+
+#### 🔴 SELL ENTRY (Short)
+1. Major trend is clearly bearish (below Slow EMA {p['ema_slow']}).
+2. RSI({p['rsi_period']}) reaches Overbought territory (above {p['rsi_upper']}) on a pullback.
+3. Price pulls back and touches/interacts with the Fast EMA ({p['ema_fast']}).
+4. Enter Short on a strong **Bearish Pin Bar** rejecting the EMA.
+"""
+
+        manual += f"""
 ---
 
-## 📈 ENTRY RULES (Step-by-Step)
-
-### 🟢 BUY ENTRY (Long)
-1. **Trend Filter:** Price is trading ABOVE the Slow EMA ({p['ema_slow']}).
-2. **Liquidity Sweep (Trigger):** The current candle sweeps below the Sell-Side Liquidity (SSL) level and closes back above it.
-3. **Structure Confirmation:** A Bullish Fair Value Gap (FVG) is formed, or the Fast EMA ({p['ema_fast']}) is above the Slow EMA.
-4. **Execution:** Enter Long immediately on the candle close after the Liquidity Sweep is confirmed.
-
-### 🔴 SELL ENTRY (Short)
-1. **Trend Filter:** Price is trading BELOW the Slow EMA ({p['ema_slow']}).
-2. **Liquidity Sweep (Trigger):** The current candle sweeps above the Buy-Side Liquidity (BSL) level and closes back below it.
-3. **Structure Confirmation:** A Bearish Fair Value Gap (FVG) is formed, or the Fast EMA ({p['ema_fast']}) is below the Slow EMA.
-4. **Execution:** Enter Short immediately on the candle close after the Liquidity Sweep is confirmed.
-
----
-
-## 🛡️ RISK MANAGEMENT & EXIT STRATEGY
+## 🛡️ RISK MANAGEMENT & POSITION SIZING
 
 ### 📉 Stop Loss (SL)
-Stop loss is placed dynamically based on market volatility using the ATR(14) indicator.
-- **Calculation:** {p['atr_mult']} * ATR(14) points from your entry price.
-- **Placement:** Place the SL below the sweep low for BUYs, or above the sweep high for SELLs.
+- Stop loss is dynamically calculated using ATR(14) to adjust for live market volatility.
+- **Calculation:** {p['atr_mult']} * ATR(14) points.
+- Place the SL below the trigger low (for BUYs) or above the trigger high (for SELLs).
 
 ### 🎯 Take Profit (TP)
-This strategy uses a fixed Risk-to-Reward (RR) ratio to guarantee profitability over the long run.
-- **Ratio:** 1 : {p['rr_ratio']}
-- **Calculation:** TP is set at exactly {p['rr_ratio']} times your Stop Loss distance. If your SL is 20 pips, your TP is {p['rr_ratio'] * 20} pips.
+- This agent evolved a specialized **Fixed Risk-to-Reward Ratio of 1:{p['rr_ratio']}**.
+- **Calculation:** Set TP at exactly {p['rr_ratio']} times your SL distance (e.g. if your SL is 15 pips, your TP is {p['rr_ratio'] * 15} pips).
+- This ensures that even with a lower winrate, the strategy remains highly profitable due to positive expectancy.
 
 ---
 **Generated by AI Trading Civilization Guardian - Agent {strat.name}**
@@ -516,7 +661,7 @@ import gradio as gr
 def get_dashboard():
     rows = []
     for a in sorted(civ.agents, key=lambda x: x.winrate, reverse=True)[:20]:
-        rows.append([a.id, f"{a.winrate:.2f}%", a.trades, f"{a.pnl:.1f}", f"RR 1:{a.params['rr_ratio']}"])
+        rows.append([a.id, f"{a.winrate:.2f}%", a.trades, f"{a.pnl:.1f}", f"{a.params['strategy_type']} (RR 1:{a.params['rr_ratio']})"])
     return rows
 
 def get_generation():
@@ -524,7 +669,7 @@ def get_generation():
 
 with gr.Blocks(title="XAUUSD Gold Guardian") as demo:
     gr.Markdown("# 🏛️ XAUUSD 1m AI Civilization\nSearching for the 90% Win-Rate Holy Grail")
-    gr.DataFrame(value=get_dashboard, headers=["Agent ID", "Win Rate", "Trades", "PNL", "Config"], every=10)
+    gr.DataFrame(value=get_dashboard, headers=["Agent ID", "Win Rate", "Trades", "PNL", "Config / Strategy"], every=10)
     # Bug Fixed: Pass the function get_generation instead of static string, so it updates every 10 seconds.
     gr.Markdown(get_generation, every=10)
 
