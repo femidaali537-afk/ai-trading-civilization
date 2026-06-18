@@ -84,7 +84,11 @@ class DataFetcher:
 class Strategy:
     def __init__(self, sid):
         self.id = sid
-        # Hyperparameters that evolve
+        # Give each agent a unique, cool name
+        prefixes = ["Zenith", "Atlas", "Nova", "Apex", "Quantum", "Titan", "Aether", "Solar", "Luna", "Onyx", "Vortex", "Iron", "Gold", "Silver", "Omega", "Alpha", "Sigma", "Prime", "Nexus", "Krypton"]
+        suffixes = ["Guardian", "Trader", "Scalper", "Oracle", "Sentinel", "Hunter", "Seeker", "Warden", "Knight", "Master", "Savant", "Wizard", "Architect", "Voyager", "Sentinel"]
+        self.name = f"{random.choice(prefixes)}-{random.choice(suffixes)}-{random.randint(100, 999)}"
+        
         self.params = {
             "ema_fast": random.randint(5, 21),
             "ema_slow": random.randint(22, 200),
@@ -93,7 +97,7 @@ class Strategy:
             "rsi_lower": random.randint(15, 35),
             "atr_mult": round(random.uniform(1.0, 3.0), 2),
             "rr_ratio": random.randint(2, 10),
-            "smc_weight": random.uniform(0, 1), # Weight for SMC/ICT vs Indicators
+            "smc_weight": random.uniform(0, 1), 
             "ict_fvg_size": round(random.uniform(0.1, 0.5), 2),
             "lookback": random.randint(20, 100),
         }
@@ -101,7 +105,7 @@ class Strategy:
         self.trades = 0
         self.pnl = 0.0
         self.fitness = 0.0
-        self.history = [] # List of (is_win, reason)
+        self.history = [] 
 
     def mutate(self):
         child = Strategy(self.id + "_m")
@@ -140,12 +144,12 @@ class Strategy:
             # Too many reversals -> Increase Trend confirmation
             self.params["ema_slow"] += 5
             self.params["smc_weight"] += 0.05
-            Log.learn(f"{self.id} learning: High reversals detected -> Strengthening trend filters.")
+            Log.learn(f"{self.name} learning: High reversals detected -> Strengthening trend filters.")
 
         if premature_sl > len(losses) * 0.4:
             # Stopped out too early -> Increase SL room
             self.params["atr_mult"] += 0.2
-            Log.learn(f"{self.id} learning: Too many premature SLs -> Increasing ATR multiplier.")
+            Log.learn(f"{self.name} learning: Too many premature SLs -> Increasing ATR multiplier.")
 
 # ================== BACKTESTER ==================
 class Backtester:
@@ -268,55 +272,67 @@ class StrategyExporter:
     def generate_manual(strat):
         p = strat.params
         manual = f"""
-# 🏆 ELITE XAUUSD 1M STRATEGY GUIDE: {strat.id}
-**Win Rate:** {strat.winrate:.2f}% | **Profit Factor:** {strat.pnl/max(1, strat.trades):.2f}
+# 🏆 ELITE XAUUSD 1M TRADING MANUAL: {strat.name}
+**Agent Name:** {strat.name}
+**Win Rate:** {strat.winrate:.2f}% | **Total Trades:** {strat.trades} | **Profit Factor:** {strat.pnl/max(1, strat.trades):.2f}
 
-## 🛠️ How to Apply Manually
-1. **Timeframe:** 1 Minute (1m)
-2. **Asset:** XAUUSD (Gold)
-3. **Indicators Setup:**
-   - Fast EMA: {p['ema_fast']}
-   - Slow EMA: {p['ema_slow']}
-   - RSI: Period {p['rsi_period']}, Upper {p['rsi_upper']}, Lower {p['rsi_lower']}
-   - ATR: Period 14 (used for SL/TP)
+---
 
-## 📈 Entry Rules
-- **BUY Entry:** 
-  - Price must be above Slow EMA ({p['ema_slow']}).
-  - Look for a Bullish Fair Value Gap (FVG) where the low of the current candle is higher than the high of the candle 2 positions back.
-  - RSI should be coming out of the Oversold zone ({p['rsi_lower']}).
-- **SELL Entry:**
-  - Price must be below Slow EMA ({p['ema_slow']}).
-  - Look for a Bearish FVG where the high of the current candle is lower than the low of the candle 2 positions back.
-  - RSI should be coming out of the Overbought zone ({p['rsi_upper']}).
+## 📖 STRATEGY OVERVIEW
+This is a high-probability scalping strategy specifically evolved for the XAUUSD (Gold) 1-Minute timeframe. It combines structural market analysis (SMC/ICT) with precise momentum filters.
 
-## 🛡️ Risk Management
-- **Stop Loss (SL):** {p['atr_mult']} * ATR (14).
-- **Take Profit (TP):** SL distance * {p['rr_ratio']} (Risk-Reward 1:{p['rr_ratio']}).
+## 🛠️ INDICATOR SETUP (Manual Configuration)
+To execute this strategy manually, set up your chart as follows:
+1. **Timeframe:** 1 Minute (1m).
+2. **Fast Exponential Moving Average (EMA):** Period {p['ema_fast']} (Color: Blue).
+3. **Slow Exponential Moving Average (EMA):** Period {p['ema_slow']} (Color: Red).
+4. **Relative Strength Index (RSI):** 
+   - Period: {p['rsi_period']}
+   - Overbought Level: {p['rsi_upper']}
+   - Oversold Level: {p['rsi_lower']}
+5. **Average True Range (ATR):** Period 14 (Used for dynamic risk management).
 
-## 💻 TradingView Pine Script (V5)
-```pinescript
-//@version=5
-strategy("Elite Gold 1m Strategy - {strat.id}", overlay=true)
-emaFast = ta.ema(close, {p['ema_fast']})
-emaSlow = ta.ema(close, {p['ema_slow']})
-rsiVal = ta.rsi(close, {p['rsi_period']})
-atrVal = ta.atr(14)
+---
 
-longCondition = (close > emaSlow) and (rsiVal < {p['rsi_lower']})
-shortCondition = (close < emaSlow) and (rsiVal > {p['rsi_upper']})
+## 📈 ENTRY RULES (Step-by-Step)
 
-if (longCondition)
-    strategy.entry("Long", strategy.long)
-    strategy.exit("Exit Long", "Long", stop=close - {p['atr_mult']}*atrVal, limit=close + {p['atr_mult']}*atrVal * {p['rr_ratio']})
+### 🟢 BUY ENTRY (Long)
+1. **Trend Confirmation:** Price must be clearly trading ABOVE the Slow EMA ({p['ema_slow']}).
+2. **Structural Trigger (SMC/ICT):** Look for a **Bullish Fair Value Gap (FVG)**.
+   - *What to look for:* A 3-candle sequence where the Low of Candle 3 is higher than the High of Candle 1, leaving a "gap" in the price action.
+3. **Momentum Confirmation:** The RSI ({p['rsi_period']}) should be emerging from the Oversold zone (below {p['rsi_lower']}) or showing a bullish divergence.
+4. **Execution:** Enter Long at the close of the candle that confirms the FVG and Trend alignment.
 
-if (shortCondition)
-    strategy.entry("Short", strategy.short)
-    strategy.exit("Exit Short", "Short", stop=close + {p['atr_mult']}*atrVal, limit=close - {p['atr_mult']}*atrVal * {p['rr_ratio']})
+### 🔴 SELL ENTRY (Short)
+1. **Trend Confirmation:** Price must be clearly trading BELOW the Slow EMA ({p['ema_slow']}).
+2. **Structural Trigger (SMC/ICT):** Look for a **Bearish Fair Value Gap (FVG)**.
+   - *What to look for:* A 3-candle sequence where the High of Candle 3 is lower than the Low of Candle 1.
+3. **Momentum Confirmation:** The RSI ({p['rsi_period']}) should be emerging from the Overbought zone (above {p['rsi_upper']}) or showing a bearish divergence.
+4. **Execution:** Enter Short at the close of the candle that confirms the FVG and Trend alignment.
 
-plot(emaFast, color=color.blue)
-plot(emaSlow, color=color.red)
-```
+---
+
+## 🛡️ RISK MANAGEMENT & EXIT STRATEGY
+
+### 📉 Stop Loss (SL) - The Safety Net
+Stop loss is based on current market volatility (ATR).
+- **Calculation:** {p['atr_mult']} * ATR(14).
+- **Placement:** Place the SL below the most recent swing low for BUYs, or above the most recent swing high for SELLs, but no further than the ATR calculation.
+
+### 🎯 Take Profit (TP) - The Goal
+This strategy uses a fixed Risk-to-Reward ratio to ensure long-term profitability.
+- **Ratio:** 1 : {p['rr_ratio']}
+- **Calculation:** If your SL is 20 pips, your TP must be {p['rr_ratio']} * 20 = {p['rr_ratio']*20} pips.
+
+---
+
+## ⚠️ TRADE FILTERS (When NOT to trade)
+- **Flat Market:** If the Fast EMA and Slow EMA are intertwining (moving sideways), DO NOT trade.
+- **High Impact News:** Avoid entries 15 minutes before and after major USD/Gold news events (CPI, FOMC, NFP).
+- **Extreme RSI:** If RSI is already above 80 for a BUY or below 20 for a SELL, wait for a pullback.
+
+---
+**Manual Generated by AI Civilization Guardian - Agent {strat.name}**
 """
         return manual
 
@@ -324,7 +340,8 @@ plot(emaSlow, color=color.red)
     def save_to_github(strat):
         if not GH_TOKEN: return False
         content = StrategyExporter.generate_manual(strat)
-        path = f"high_winrate_strategies/{strat.id}_wr{int(strat.winrate)}.txt"
+        # Save using the Agent's unique name and winrate
+        path = f"high_winrate_strategies/{strat.name}_wr{int(strat.winrate)}.txt"
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
         headers = {"Authorization": f"token {GH_TOKEN}"}
         
@@ -333,7 +350,7 @@ plot(emaSlow, color=color.red)
         sha = r.json().get("sha") if r.status_code == 200 else None
         
         data = {
-            "message": f"Elite Strategy Saved: {strat.id} ({strat.winrate}%)",
+            "message": f"Elite Manual Saved: {strat.name} ({strat.winrate}%)",
             "content": base64.b64encode(content.encode()).decode(),
             "branch": "main"
         }
