@@ -3,3 +3,4 @@ requests
 pandas
 numpy
 audioop-lts
+huggingface_hub<=0.24.0
