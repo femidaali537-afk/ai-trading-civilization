@@ -54,23 +54,27 @@ ELITE_DIR = Path("high_winrate_strategies")
 ELITE_DIR.mkdir(exist_ok=True)
 
 def load_cached(symbol, tf, days):
-    f = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
-    if not f.exists(): return []
+    f_path = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
+    if not f_path.exists(): return []
     try:
-        data = json.load(open(f))
+        with open(f_path, "r") as f:
+            data = json.load(f)
         cutoff = (datetime.utcnow() - timedelta(days=days)).date()
         return [d for d in data if datetime.fromisoformat(d["time"]).date() >= cutoff]
     except:
         return []
 
 def save_cached(symbol, tf, new_data):
-    f = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
+    f_path = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
     old = []
-    if f.exists():
-        try: old = json.load(open(f))
+    if f_path.exists():
+        try:
+            with open(f_path, "r") as f:
+                old = json.load(f)
         except: pass
     merged = {d["time"]: d for d in old + new_data}
-    json.dump(sorted(merged.values(), key=lambda x: x["time"]), open(f, "w"))
+    with open(f_path, "w") as f:
+        json.dump(sorted(merged.values(), key=lambda x: x["time"]), f)
     return len(merged)
 
 def save_elite_to_github(strat):
@@ -171,7 +175,7 @@ class DataFetcher:
             iv = {"1m":"1m","3m":"3m","5m":"5m","15m":"15m"}.get(tf,"5m")
             df = self._yf.Ticker(yfs).history(period="max", interval=iv)
             if df.empty: return []
-            return [{"time": str(i.date()), "open": float(r.Open), "high": float(r.High),
+            return [{"time": i.isoformat(), "open": float(r.Open), "high": float(r.High),
                      "low": float(r.Low), "close": float(r.Close)} for i,r in df.iterrows()]
         except: return []
 
@@ -196,7 +200,7 @@ class DataFetcher:
                 for o in sorted(bars, key=lambda x:x[0]):
                     if o[0] not in seen:
                         seen.add(o[0])
-                        cleaned.append({"time": datetime.fromtimestamp(o[0]/1000).strftime("%Y-%m-%d"),
+                        cleaned.append({"time": datetime.fromtimestamp(o[0]/1000).isoformat(),
                                         "open":o[1],"high":o[2],"low":o[3],"close":o[4]})
                 return cleaned[-target:] if len(cleaned) > target else cleaned
             except: continue
@@ -359,7 +363,10 @@ class Backtester:
                         hit = "TP"
                 if hit:
                     is_win = (hit == "TP")
-                    pnl = (pos["tp"] - pos["entry"]) if is_win and pos["dir"] == "BUY" else                           (pos["entry"] - pos["sl"]) if (not is_win and pos["dir"] == "BUY") else                           (pos["entry"] - pos["tp"]) if (is_win and pos["dir"] == "SELL") else (pos["sl"] - pos["entry"])
+                    if is_win:
+                        pnl = (pos["tp"] - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - pos["tp"])
+                    else:
+                        pnl = (pos["sl"] - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - pos["sl"])
                     strat.record_trade(is_win, f"{hit}: {reason}", pnl)
                     trades.append(is_win)
                     pos = None
