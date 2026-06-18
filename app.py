@@ -848,4 +848,4 @@ with gr.Blocks(title="XAUUSD Gold Guardian") as demo:
     # Bug Fixed: Pass the function get_generation instead of static string, so it updates every 10 seconds.
     gr.Markdown(get_generation, every=10)
 
-demo.queue().launch(server_name="0.0.0.0", server_port=7860)
+demo.queue().launch()
