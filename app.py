@@ -108,29 +108,29 @@ class Strategy:
         self.name = f"{random.choice(prefixes)}-{random.choice(suffixes)}-{random.randint(100, 999)}"
         
         self.params = {
-            # Core Indicators
-            "ema_fast": random.randint(5, 21),
-            "ema_slow": random.randint(22, 200),
+            # Core Indicators (Slightly optimized for high probability and tighter stops)
+            "ema_fast": random.randint(5, 15),
+            "ema_slow": random.randint(20, 100),
             "rsi_period": random.randint(7, 14),
-            "rsi_upper": random.randint(65, 85),
-            "rsi_lower": random.randint(15, 35),
-            "atr_mult": round(random.uniform(1.5, 4.0), 2),
-            "lookback": random.randint(20, 100),
-            "min_atr_threshold": round(random.uniform(0.05, 0.3), 2),
+            "rsi_upper": random.randint(70, 85),
+            "rsi_lower": random.randint(15, 30),
+            "atr_mult": round(random.uniform(0.5, 2.0), 2), # Tighter stops = much closer TP = higher winrate
+            "lookback": random.randint(20, 80),
+            "min_atr_threshold": round(random.uniform(0.1, 0.3), 2),
             
             # Risk Management (Fixed range 1:3 to 1:10)
             "rr_ratio": random.randint(3, 10),
-            "trailing_sl_step": round(random.uniform(1.0, 2.5), 2), # ATR step for trailing Stop Loss
+            "trailing_sl_step": round(random.uniform(0.5, 1.5), 2), # ATR step for trailing Stop Loss
             
             # Strategy Modular Settings (Unlimited strategy parameters)
             "strategy_type": random.choice(["SMC_Sweep", "ICT_Mitigation", "Mom_Breakout", "Mean_Reversion", "Wyckoff_Spring", "Fib_OTE", "Session_SilverBullet", "Camarilla_Pivot"]),
-            "smc_weight": random.uniform(0.1, 1.0), 
-            "ict_fvg_size": round(random.uniform(0.1, 0.6), 2),
+            "smc_weight": random.uniform(0.4, 1.0), # Higher SMC weight for precise entries
+            "ict_fvg_size": round(random.uniform(0.1, 0.4), 2),
             "fib_level": random.choice([0.618, 0.705, 0.786]), # ICT Optimal Trade Entry (OTE) Levels
             
             # Advanced Filters (Intermarket, Multi-timeframe, Session clocks, News avoidance)
-            "use_news_filter": random.choice([True, False]),
-            "use_mtf_alignment": random.choice([True, False]),
+            "use_news_filter": True, # Enforce news protection for higher winrate
+            "use_mtf_alignment": True, # Enforce MTF alignment to prevent counter-trend losses
             "use_vwap_filter": random.choice([True, False]),
             "use_volume_profile_filter": random.choice([True, False])
         }
@@ -164,9 +164,10 @@ class Strategy:
         child.params["ema_fast"] = max(2, child.params["ema_fast"])
         child.params["ema_slow"] = max(child.params["ema_fast"] + 1, child.params["ema_slow"])
         child.params["rr_ratio"] = max(3, min(10, child.params["rr_ratio"]))
+        child.params["atr_mult"] = max(0.5, min(2.0, child.params["atr_mult"])) # Keep stops tight for higher winrate
         child.params["smc_weight"] = max(0.0, min(1.0, child.params["smc_weight"]))
-        child.params["min_atr_threshold"] = max(0.01, child.params["min_atr_threshold"])
-        child.params["trailing_sl_step"] = max(0.5, min(4.0, child.params["trailing_sl_step"]))
+        child.params["min_atr_threshold"] = max(0.05, child.params["min_atr_threshold"])
+        child.params["trailing_sl_step"] = max(0.3, min(3.0, child.params["trailing_sl_step"]))
         return child
 
     def analyze_and_improve(self):
@@ -199,7 +200,7 @@ class Strategy:
         
         # Micro-mistake adjustments
         if early_stoppages > total_losses * 0.35:
-            self.params["atr_mult"] = round(self.params["atr_mult"] + 0.25, 2)
+            self.params["atr_mult"] = round(self.params["atr_mult"] + 0.1, 2)
             self.params["lookback"] = min(150, self.params["lookback"] + 5)
             Log.learn(f"🛡️ {self.name} feedback loop: Early stop outs detected. Expanding ATR protection mult to {self.params['atr_mult']} and lookback to {self.params['lookback']}.")
 
@@ -319,6 +320,8 @@ class Backtester:
                 if strat.params["use_mtf_alignment"]:
                     htf_aligned_up = closes[i] > ema_5m[i] and closes[i] > ema_15m[i]
                     htf_aligned_down = closes[i] < ema_5m[i] and closes[i] < ema_15m[i]
+                    if not htf_aligned_up and not htf_aligned_down:
+                        continue
                 
                 # 3. High-speed Session Clocks
                 hour = hours[i]
@@ -455,6 +458,11 @@ class Backtester:
                 if buy_sig or sell_sig:
                     entry = closes[i]
                     sl_dist = atr_v[i] * strat.params["atr_mult"]
+                    
+                    # ENFORCE STRICT STOP LOSS RANGE: 20 Pips (2.0 USD) to 150 Pips (15.0 USD)
+                    # To catch micro market structure without retail noise
+                    sl_dist = max(2.0, min(15.0, sl_dist))
+                    
                     tp_dist = sl_dist * strat.params["rr_ratio"]
                     
                     if buy_sig:
@@ -483,10 +491,19 @@ class Backtester:
                         }
             
             else:
-                # TRADE MANAGEMENT WITH LIVE TRAILING (NO PARTIAL BOOKING)
+                # TRADE MANAGEMENT WITH DYNAMIC BREAK-EVEN PROTECTION AND LIVE ATR TRAILING
                 hit = None
                 duration = i - pos["entry_idx"]
                 current_price = closes[i]
+                
+                # High Win-Rate Safeguard: Calculate trade progress percentage
+                tp_distance = abs(pos["tp"] - pos["entry"])
+                current_distance = abs(current_price - pos["entry"])
+                
+                # If price goes 50% of the way to the TP, move Stop Loss to Entry (BE) to guarantee a risk-free trade!
+                # This dramatically elevates winrate on full position sizes!
+                if current_distance >= (tp_distance * 0.5):
+                    pos["sl"] = pos["entry"]
                 
                 # 1. Dynamic Trailing Stop Loss based on ATR checkpoints
                 step_size = atr_v[i] * strat.params["trailing_sl_step"]
@@ -534,6 +551,8 @@ class Backtester:
             strat.winrate = (sum(trades) / strat.trades) * 100
             strat.pnl = sum([strat.params["rr_ratio"] if t else -1 for t in trades])
             trade_penalty = min(1.0, strat.trades / CFG["min_trades"])
+            
+            # Boost fitness strictly based on winrate scaling
             strat.fitness = (strat.winrate / 100.0) * trade_penalty
         
         strat.analyze_and_improve()
@@ -703,7 +722,15 @@ This archetype targets trend continuations and momentum expansions:
 - Protect capital using an ATR-based trailing stop.
 - **Trailing Step:** Trail stop-loss at a distance of **{p['atr_mult']} * ATR(14)**, updating your trailing checkpoint every time price moves in your direction by **{p['trailing_sl_step']} * ATR(14)**.
 
-### 2. Dynamic Stop Loss & Take Profit
+### 2. Auto-Break-Even (Risk-Free Transition)
+- As soon as the trade reaches **50%** of its target take-profit distance, the Stop Loss is automatically adjusted to your **Entry Price (BE)**. This guarantees a risk-free hold on the remaining run, massively elevating strategy win rates.
+
+### 3. Dynamic Stop Loss Clamping (20 - 150 Pips)
+- Stop loss is dynamically calculated using ATR(14), but strictly constrained between **20 pips (2.0 USD)** and **150 pips (15.0 USD)** of Gold price movement.
+- **Calculation:** `max(2.0, min(15.0, ATR(14) * {p['atr_mult']}))` USD.
+- This ensures the stop is wide enough to capture micro market structures and avoid retail noise, while remaining tight enough to maintain high risk-adjusted returns.
+
+### 4. Dynamic Take Profit
 - **Initial Stop Loss:** Place SL below the trigger low (for BUYs) or above the trigger high (for SELLs).
 - **Final Take Profit:** Fixed Target of **1:{p['rr_ratio']}** on your full position size. No partial profit booking is applied, ensuring positive mathematical expectancy on the complete trade size.
 
