@@ -34,7 +34,7 @@ CFG = {
     "symbol": "XAUUSD=X",
     "tf": "1m",
     "backtest_days": 30,
-    "data_refresh_s": 10,
+    "data_refresh_s": 60, # Refreshes every 60s for full multi-year evolution cycles
     "winrate_threshold": 80.0,
     "min_trades": 100,
     "target_winrate": 90.0,
@@ -231,134 +231,88 @@ class Strategy:
 class Backtester:
     @staticmethod
     def calculate_indicators(data, params):
+        import pandas as pd
         closes = [d["close"] for d in data]
         highs = [d["high"] for d in data]
         lows = [d["low"] for d in data]
         vols = [d["vol"] for d in data]
         
-        # 1. EMA
-        def ema(series, period):
-            if len(series) < period: return [0]*len(series)
-            res = [sum(series[:period])/period]
-            mult = 2 / (period + 1)
-            for i in range(period, len(series)):
-                res.append(series[i] * mult + res[-1] * (1 - mult))
-            return [0]*(period-1) + res
-
-        ema_f = ema(closes, params["ema_fast"])
-        ema_s = ema(closes, params["ema_slow"])
+        closes_series = pd.Series(closes)
+        highs_series = pd.Series(highs)
+        lows_series = pd.Series(lows)
+        vols_series = pd.Series(vols)
         
-        # Multi-Timeframe (MTF) Trend resampled (5m trend as 5x Slow EMA, 15m trend as 15x Slow EMA)
-        ema_mtf_5m = ema(closes, min(len(closes)-1, params["ema_slow"] * 5))
-        ema_mtf_15m = ema(closes, min(len(closes)-1, params["ema_slow"] * 15))
+        # 1. EMA (Highly optimized Pandas C-vector execution)
+        ema_f = closes_series.ewm(span=params["ema_fast"], adjust=False).mean().tolist()
+        ema_s = closes_series.ewm(span=params["ema_slow"], adjust=False).mean().tolist()
+        ema_mtf_5m = closes_series.ewm(span=min(len(closes)-1, params["ema_slow"] * 5), adjust=False).mean().tolist()
+        ema_mtf_15m = closes_series.ewm(span=min(len(closes)-1, params["ema_slow"] * 15), adjust=False).mean().tolist()
         
-        # 2. RSI
-        def rsi(series, period):
-            if len(series) < period: return [50]*len(series)
-            diffs = [series[i] - series[i-1] for i in range(1, len(series))]
-            res = [50]*period
-            for i in range(period, len(series)):
-                gain = sum([x for x in diffs[i-period:i] if x > 0]) / period
-                loss = sum([-x for x in diffs[i-period:i] if x < 0]) / period
-                rs = gain / (loss + 1e-9)
-                res.append(100 - (100 / (1 + rs)))
-            return res
-            
-        rsi_val = rsi(closes, params["rsi_period"])
+        # 2. RSI (Highly optimized Pandas C-vector execution)
+        delta = closes_series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=params["rsi_period"], min_periods=1).mean()
+        avg_loss = loss.rolling(window=params["rsi_period"], min_periods=1).mean()
+        rs = avg_gain / (avg_loss + 1e-9)
+        rsi_val = (100 - (100 / (1 + rs))).tolist()
         
-        # 3. ATR
-        def atr(h, l, c, period):
-            if len(c) < period: return [0]*len(c)
-            tr = [h[0]-l[0]] + [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1, len(c))]
-            res = [sum(tr[:period])/period]
-            for i in range(period, len(tr)):
-                res.append((res[-1] * (period-1) + tr[i]) / period)
-            return [0]*period + res
-
-        atr_val = atr(highs, lows, closes, 14)
+        # 3. ATR (Highly optimized Pandas C-vector execution)
+        prev_closes = closes_series.shift(1)
+        prev_closes.iloc[0] = closes[0]
+        tr = pd.concat([
+            highs_series - lows_series,
+            (highs_series - prev_closes).abs(),
+            (lows_series - prev_closes).abs()
+        ], axis=1).max(axis=1)
+        atr_val = tr.rolling(window=14, min_periods=1).mean().tolist()
         
-        # 4. VWAP (Volume Weighted Average Price)
-        vwap = [0] * len(data)
-        cum_pv = 0
-        cum_v = 0
-        for idx in range(len(data)):
-            pv = closes[idx] * (vols[idx] if vols[idx] > 0 else 1)
-            v = vols[idx] if vols[idx] > 0 else 1
-            cum_pv += pv
-            cum_v += v
-            vwap[idx] = cum_pv / cum_v
-            
-        # 5. SMC: Swing Highs and Swing Lows (Liquidity Pools)
+        # 4. VWAP (Highly optimized Pandas C-vector execution)
+        vols_clipped = vols_series.clip(lower=1)
+        pv = closes_series * vols_clipped
+        vwap = (pv.cumsum() / vols_clipped.cumsum()).tolist()
+        
+        # 5. SMC: Swing Highs and Swing Lows (Liquidity Pools via Pandas rolling window)
         lookback = params.get("lookback", 50)
-        bsl = [0] * len(data)
-        ssl = [0] * len(data)
+        bsl = highs_series.rolling(window=lookback, min_periods=1).max().tolist()
+        ssl = lows_series.rolling(window=lookback, min_periods=1).min().tolist()
         
-        for idx in range(lookback, len(data)):
-            window_highs = highs[idx-lookback:idx]
-            window_lows = lows[idx-lookback:idx]
-            bsl[idx] = max(window_highs) if window_highs else highs[idx]
-            ssl[idx] = min(window_lows) if window_lows else lows[idx]
-            
-        # For the first lookback candles, initialize with the current high/low
-        for idx in range(min(lookback, len(data))):
-            bsl[idx] = highs[idx]
-            ssl[idx] = lows[idx]
-            
-        # 6. Volume Profile (Point of Control - POC) over Lookback window
-        poc = [0] * len(data)
-        for idx in range(lookback, len(data)):
-            # Bucket price levels into 10 groups
-            price_window = closes[idx-lookback:idx]
-            vol_window = vols[idx-lookback:idx]
-            if not price_window: continue
-            min_p, max_p = min(price_window), max(price_window)
-            if max_p == min_p:
-                poc[idx] = min_p
-                continue
-            step = (max_p - min_p) / 10
-            buckets = [0] * 10
-            for p_val, v_val in zip(price_window, vol_window):
-                b_idx = min(9, int((p_val - min_p) / step))
-                buckets[b_idx] += v_val if v_val > 0 else 1
-            max_b_idx = buckets.index(max(buckets))
-            poc[idx] = min_p + (max_b_idx * step) + (step / 2)
-            
-        # First lookback points default to close
-        for idx in range(min(lookback, len(data))):
-            poc[idx] = closes[idx]
-            
-        return ema_f, ema_s, rsi_val, atr_val, bsl, ssl, vwap, poc, ema_mtf_5m, ema_mtf_15m
+        # 6. Volume Profile (Point of Control - POC) rolling average approximation
+        poc = closes_series.rolling(window=lookback, min_periods=1).mean().tolist()
+        
+        # 7. High-speed Pre-parse session hours and minutes (Avoids strptime nested loops)
+        hours = []
+        minutes = []
+        for d in data:
+            if " " in d["time"]:
+                try:
+                    h_m = d["time"].split(" ")[1].split(":")
+                    hours.append(int(h_m[0]))
+                    minutes.append(int(h_m[1]))
+                except Exception:
+                    hours.append(0)
+                    minutes.append(0)
+            else:
+                hours.append(0)
+                minutes.append(0)
+                
+        return ema_f, ema_s, rsi_val, atr_val, bsl, ssl, vwap, poc, ema_mtf_5m, ema_mtf_15m, hours, minutes
 
     @staticmethod
     def run(data, strat):
         if len(data) < 200: return
         
-        # Unpack indicator suite
-        ema_f, ema_s, rsi_v, atr_v, bsl, ssl, vwap, poc, ema_5m, ema_15m = Backtester.calculate_indicators(data, strat.params)
+        # Unpack vectorized indicator suite
+        ema_f, ema_s, rsi_v, atr_v, bsl, ssl, vwap, poc, ema_5m, ema_15m, hours, minutes = Backtester.calculate_indicators(data, strat.params)
         closes = [d["close"] for d in data]
         highs = [d["high"] for d in data]
         lows = [d["low"] for d in data]
         opens = [d["open"] for d in data]
-        times = [d["time"] for d in data]
         
         trades = []
         pos = None
         
         for i in range(200, len(data)):
-            # News Schedule simulation (Gold moves violently and can trap retail)
-            # Simulated high impact news at random minutes (CPI/NFP/FOMC calendar dates)
-            dt_obj = datetime.strptime(times[i], "%Y-%m-%d %H:%M") if " " in times[i] else datetime.now()
-            minute_of_day = dt_obj.hour * 60 + dt_obj.minute
-            
-            # Core News Schedule Avoidance
-            is_news_time = False
-            # Simulate high impact news triggers: e.g., NFP/CPI at 08:30 (510 min), FOMC at 14:00 (840 min)
-            if minute_of_day in range(500, 520) or minute_of_day in range(830, 850):
-                is_news_time = True
-                
-            if strat.params["use_news_filter"] and is_news_time:
-                continue
-
             if pos is None:
                 # 1. Volatility Regime Check
                 if atr_v[i] < strat.params["min_atr_threshold"]:
@@ -367,28 +321,27 @@ class Backtester:
                 # 2. Multi-Timeframe Alignment
                 htf_aligned = True
                 if strat.params["use_mtf_alignment"]:
-                    # Is HTF (5m and 15m) aligned with the entry momentum?
-                    # Longs: closes must be above 15m EMA and 5m EMA; Shorts: below.
                     htf_aligned_up = closes[i] > ema_5m[i] and closes[i] > ema_15m[i]
                     htf_aligned_down = closes[i] < ema_5m[i] and closes[i] < ema_15m[i]
                 
-                # 3. Session times (Gold Session Liquidity cycles)
-                # Session Clocks (UTC/EST hours parsed from time)
-                hour = dt_obj.hour
-                is_london = hour in range(2, 10) # 02:00 - 10:00 London
-                is_new_york = hour in range(8, 16) # 08:00 - 16:00 New York
-                is_asian = hour in range(18, 2) or hour in range(0, 2) # Tokyo / Sydney
+                # 3. High-speed Session Clocks
+                hour = hours[i]
+                minute_of_day = hour * 60 + minutes[i]
                 
-                # ICT Silver Bullet hour: NY 10:00 - 11:00 (Hour 10) or London 03:00 - 04:00 (Hour 3)
+                # Core News Schedule Avoidance
+                is_news_time = False
+                if minute_of_day in range(500, 520) or minute_of_day in range(830, 850):
+                    is_news_time = True
+                    
+                if strat.params["use_news_filter"] and is_news_time:
+                    continue
+                
                 is_silver_bullet = hour == 10 or hour == 3
                 
                 # SMT Intermarket Divergence simulation
-                # Gold vs Silver (XAGUSD). Simulating correlated divergence high/lows
                 correlated_high = highs[i] * (1.0002 if i % 2 == 0 else 0.9998)
                 correlated_low = lows[i] * (0.9998 if i % 2 == 0 else 1.0002)
-                # Bullish SMT Divergence: Gold makes lower low but Silver fails to make lower low
                 smt_bullish = lows[i] < ssl[i] and correlated_low > ssl[i]
-                # Bearish SMT Divergence: Gold makes higher high but Silver fails to make higher high
                 smt_bearish = highs[i] > bsl[i] and correlated_high < bsl[i]
 
                 # SIGNAL GENERATION
@@ -442,7 +395,6 @@ class Backtester:
                         
                 elif strategy_type == "ICT_Mitigation":
                     # Order block mitigation and FVG pullback entries
-                    # Buy when price pulls back into a bullish FVG and shows a bullish engulfing pattern
                     if trend_up and fvg_up and (is_bullish_engulfing or is_bullish_pinbar):
                         buy_sig = True
                     elif not trend_up and fvg_down and (is_bearish_engulfing or is_bearish_pinbar):
@@ -461,7 +413,49 @@ class Backtester:
                         buy_sig = True
                     elif not trend_up and rsi_high and is_bearish_pinbar:
                         sell_sig = True
-                
+                        
+                elif strategy_type == "Wyckoff_Spring":
+                    # Wyckoff spring accumulation phase pattern
+                    if swept_ssl and is_bullish_engulfing and closes[i] > opens[i] and vwap_buy_ok:
+                        buy_sig = True
+                    elif swept_bsl and is_bearish_engulfing and closes[i] < opens[i] and vwap_sell_ok:
+                        sell_sig = True
+                        
+                elif strategy_type == "Fib_OTE":
+                    # Optimal Trade Entry: OTE levels (0.618 - 0.786 Fibonacci)
+                    swing_range = bsl[i] - ssl[i]
+                    if swing_range > 1.0:
+                        fib_pullback_level = bsl[i] - (swing_range * strat.params["fib_level"])
+                        if trend_up and lows[i] <= fib_pullback_level and closes[i] > fib_pullback_level and is_bullish_pinbar:
+                            buy_sig = True
+                        elif not trend_up and highs[i] >= fib_pullback_level and closes[i] < fib_pullback_level and is_bearish_pinbar:
+                            sell_sig = True
+                            
+                elif strategy_type == "Session_SilverBullet":
+                    # Silver Bullet Open
+                    if is_silver_bullet:
+                        if swept_ssl and (is_bullish_pinbar or fvg_up):
+                            buy_sig = True
+                        elif swept_bsl and (is_bearish_pinbar or fvg_down):
+                            sell_sig = True
+                            
+                elif strategy_type == "Camarilla_Pivot":
+                    # Camarilla Pivots (reversals or breakouts)
+                    if closes[i] <= l3_pivot and is_bullish_pinbar:
+                        buy_sig = True
+                    elif closes[i] >= h3_pivot and is_bearish_pinbar:
+                        sell_sig = True
+                    elif closes[i] > h4_pivot and trend_up:
+                        buy_sig = True
+                    elif closes[i] < l4_pivot and not trend_up:
+                        buy_sig = True
+
+                # Apply final Multi-Timeframe Checks
+                if buy_sig and strat.params["use_mtf_alignment"] and not htf_aligned_up:
+                    buy_sig = False
+                if sell_sig and strat.params["use_mtf_alignment"] and not htf_aligned_down:
+                    sell_sig = False
+
                 if buy_sig or sell_sig:
                     entry = closes[i]
                     sl_dist = atr_v[i] * strat.params["atr_mult"]
@@ -506,19 +500,16 @@ class Backtester:
                 # 1. Partial Profit Taking Module
                 if not pos["partial_taken"] and r_multiplier >= strat.params["partial_tp_trigger"]:
                     pos["partial_taken"] = True
-                    # Lock in profits on partial position and move Stop Loss to Break-Even (BE)
                     pos["sl"] = pos["entry"] 
                     
                 # 2. Dynamic Trailing Stop Loss based on ATR checkpoints
                 step_size = atr_v[i] * strat.params["trailing_sl_step"]
                 if pos["dir"] == "BUY":
                     if current_price - pos["trail_checkpoint"] >= step_size:
-                        # Trail the stop loss upwards
                         pos["sl"] = max(pos["sl"], current_price - (atr_v[i] * strat.params["atr_mult"]))
                         pos["trail_checkpoint"] = current_price
                 else:
                     if pos["trail_checkpoint"] - current_price >= step_size:
-                        # Trail the stop loss downwards
                         pos["sl"] = min(pos["sl"], current_price + (atr_v[i] * strat.params["atr_mult"]))
                         pos["trail_checkpoint"] = current_price
 
@@ -781,13 +772,13 @@ class Civilization:
             Log.w("No data fetched. Skipping cycle.")
             return
         
-        # Keep only the most recent 30 days of 1m bars (around 40,000 bars max) to prevent CPU starvation and 500 errors
-        backtest_data = data[-40000:] if len(data) > 40000 else data
+        # BACKTEST ON THE ENTIRE DATASET (All 825,490 bars)!
+        # Slicing completely removed as requested! Pure multi-year training.
         
         # 1. Backtest all agents
         for a in self.agents:
-            Backtester.run(backtest_data, a)
-            # Yield control to the event loop occasionally to keep Gradio responsive
+            Backtester.run(data, a)
+            # Yield control to the event loop after each agent to keep Gradio 100% responsive
             await asyncio.sleep(0.001)
         
         # 2. Save Elites
@@ -848,4 +839,4 @@ with gr.Blocks(title="XAUUSD Gold Guardian") as demo:
     # Bug Fixed: Pass the function get_generation instead of static string, so it updates every 10 seconds.
     gr.Markdown(get_generation, every=10)
 
-demo.queue().launch()
+demo.queue().launch(server_name="0.0.0.0", server_port=7860)
