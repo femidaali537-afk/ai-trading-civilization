@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-AI Trading Civilization — ULTRA ACTIVE + SELF LEARNING
-SAVES FULL DETAILS: exact data_period (2025-06-17 to 2026-06-17), backtest_start/end, avg_win_pnl, avg_loss_pnl, trade_breakdown (win/loss only), notes etc.
-- Every agent learns from its own mistakes
-- Analyzes why a trade was wrong (SL vs reversal etc)
-- Adapts parameters (RR, lookbacks, thresholds) to improve
-- Strategies get better and better over generations
-- All strategies with >=70% winrate are automatically saved
-- Saved to high_winrate_strategies/ folder + pushed to GitHub (if GH_TOKEN)
+🏛️ AI TRADING CIVILIZATION: XAUUSD 1M GOLD EDITION
+- Focus: XAUUSD 1-Minute Chart exclusively.
+- Goal: 80-90% Win Rate via self-improving AI Agents.
+- Tech: SMC, ICT, Indicators, Genetic Evolution, & Mistake Analysis.
+- Output: Detailed Manuals + TradingView Pine Script for Elite Strategies.
 """
 
 import asyncio
@@ -23,21 +20,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 warnings.filterwarnings("ignore")
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-COLONY_ID = os.getenv("COLONY_ID", "colony-1")
+# ================== CONFIGURATION ==================
+COLONY_ID = os.getenv("COLONY_ID", "gold-colony-1")
 AGENTS_PER_COLONY = 100
 GH_TOKEN = os.getenv("GH_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "femidaali537-afk/ai-trading-civilization")
 
 CFG = {
-    "symbols": ["XAUUSD=X", "BTC-USD"],
-    "backtest_days": 365,
-    "data_refresh_s": 7,
-    "timeframes": ["1m", "3m", "5m", "15m"],
-    "default_tf": "5m",
-    "min_trades_for_save": 35,
-    "winrate_threshold": 70.0,
+    "symbol": "XAUUSD=X",
+    "tf": "1m",
+    "backtest_days": 30,
+    "data_refresh_s": 10,
+    "winrate_threshold": 80.0,
+    "min_trades": 100,
+    "target_winrate": 90.0,
 }
 
 class Log:
@@ -48,461 +45,362 @@ class Log:
     @staticmethod
     def w(m, *a): print(f"{datetime.now().strftime('%H:%M:%S')} | WARN  | {m % a if a else m}", flush=True)
 
-CACHE_DIR = Path("data_cache")
-CACHE_DIR.mkdir(exist_ok=True)
-ELITE_DIR = Path("high_winrate_strategies")
-ELITE_DIR.mkdir(exist_ok=True)
-
-def load_cached(symbol, tf, days):
-    f_path = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
-    if not f_path.exists(): return []
-    try:
-        with open(f_path, "r") as f:
-            data = json.load(f)
-        cutoff = (datetime.utcnow() - timedelta(days=days)).date()
-        return [d for d in data if datetime.fromisoformat(d["time"]).date() >= cutoff]
-    except:
-        return []
-
-def save_cached(symbol, tf, new_data):
-    f_path = CACHE_DIR / f"{symbol.replace('=','')}_{tf}.json"
-    old = []
-    if f_path.exists():
-        try:
-            with open(f_path, "r") as f:
-                old = json.load(f)
-        except: pass
-    merged = {d["time"]: d for d in old + new_data}
-    with open(f_path, "w") as f:
-        json.dump(sorted(merged.values(), key=lambda x: x["time"]), f)
-    return len(merged)
-
-def save_elite_to_github(strat):
-    if not GH_TOKEN:
-        return False
-    try:
-        path = f"high_winrate_strategies/{strat.id}.json"
-        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-        headers = {"Authorization": f"token {GH_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-        content = json.dumps({
-            "id": strat.id,
-            "winrate": strat.winrate,
-            "trades": strat.trades,
-            "pnl": strat.pnl,
-            "params": strat.params,
-            "fitness": strat.fitness,
-            "saved_at": datetime.utcnow().isoformat(),
-            "recent_mistakes": getattr(strat, "recent_mistakes", [])[-8:],
-        }, indent=2)
-        data = {
-            "message": f"Auto-save elite >=70% WR strategy {strat.id}",
-            "content": base64.b64encode(content.encode()).decode(),
-            "branch": "main"
-        }
-        r = requests.get(url, headers=headers, timeout=8)
-        if r.status_code == 200:
-            data["sha"] = r.json()["sha"]
-        r = requests.put(url, headers=headers, json=data, timeout=12)
-        return r.status_code in (200, 201)
-    except Exception as e:
-        Log.w(f"GitHub push failed for {strat.id}: {e}")
-        return False
-
-def save_elite_strategy(strat):
-    """Save any strategy that reaches 70%+ winrate"""
-    if strat.winrate < CFG["winrate_threshold"] or strat.trades < CFG["min_trades_for_save"]:
-        return False
-    payload = {
-        "id": strat.id,
-        "winrate": strat.winrate,
-        "trades": strat.trades,
-        "pnl": strat.pnl,
-        "params": strat.params,
-        "fitness": strat.fitness,
-        "saved_at": datetime.utcnow().isoformat(),
-        "recent_mistakes": getattr(strat, "recent_mistakes", [])[-8:],
-    }
-    (ELITE_DIR / f"{strat.id}.json").write_text(json.dumps(payload, indent=2))
-    if GH_TOKEN:
-        if save_elite_to_github(strat):
-            Log.learn(f"ELITE SAVED TO GITHUB: {strat.id} ({strat.winrate}% WR)")
-    return True
-
+# ================== DATA ENGINE ==================
 class DataFetcher:
     def __init__(self):
-        self._yf = None
-        try:
-            import yfinance as yf
-            self._yf = yf
-        except: pass
-        self._ccxt = {}
-        try:
-            import ccxt
-            self._ccxt = {"binance": ccxt.binance({"enableRateLimit": True})}
-        except: pass
-        self._cache = {}
-        self._last = {}
+        import yfinance as yf
+        self.yf = yf
+        self._cache = None
+        self._last_update = 0
 
-    async def fetch(self, symbol, tf=None, days=None):
-        tf = tf or CFG["default_tf"]
-        days = days or CFG["backtest_days"]
-        key = f"{symbol}:{tf}:{days}"
+    async def fetch_gold_1m(self):
         now = time.time()
-        if key in self._cache and now - self._last.get(key, 0) < 30:
-            return self._cache[key]
-        cached = load_cached(symbol, tf, days)
-        fresh = None
-        if not fresh:
-            fresh = await self._fetch_yahoo(symbol, tf, days)
-        if not fresh or len(fresh) < 150:
-            c = await self._fetch_ccxt(symbol, tf, days)
-            if c: fresh = c
-        final = cached + (fresh or [])
-        if fresh: save_cached(symbol, tf, fresh)
-        if not final or len(final) < 50:
-            final = self._synth(symbol, days, tf)
-        seen = {d["time"]: d for d in final}
-        final = sorted(seen.values(), key=lambda x: x["time"])
-        if final:
-            self._cache[key] = final
-            self._last[key] = now
-        return final
-
-    async def _fetch_yahoo(self, symbol, tf, days):
-        if not self._yf: return []
+        if self._cache and now - self._last_update < 60:
+            return self._cache
+        
         try:
-            yfs = {"XAUUSD=X": "GC=F", "BTC-USD": "BTC-USD"}.get(symbol, symbol)
-            iv = {"1m":"1m","3m":"3m","5m":"5m","15m":"15m"}.get(tf,"5m")
-            df = self._yf.Ticker(yfs).history(period="max", interval=iv)
+            # yfinance 1m data is limited to last 7 days
+            df = self.yf.Ticker("GC=F").history(period="7d", interval="1m")
             if df.empty: return []
-            return [{"time": i.isoformat(), "open": float(r.Open), "high": float(r.High),
-                     "low": float(r.Low), "close": float(r.Close)} for i,r in df.iterrows()]
-        except: return []
+            
+            data = []
+            for i, r in df.iterrows():
+                data.append({
+                    "time": i.isoformat(),
+                    "open": float(r.Open),
+                    "high": float(r.High),
+                    "low": float(r.Low),
+                    "close": float(r.Close),
+                    "vol": float(r.Volume)
+                })
+            self._cache = data
+            self._last_update = now
+            return data
+        except Exception as e:
+            Log.w(f"Fetch error: {e}")
+            return []
 
-    async def _fetch_ccxt(self, symbol, tf, days):
-        if not self._ccxt: return []
-        sym = "BTC/USDT" if symbol == "BTC-USD" else "XAU/USD"
-        ctf = {"1m":"1m","3m":"3m","5m":"5m","15m":"15m"}.get(tf,"5m")
-        target = int(days * 24 * 60 / {"1m":1,"3m":3,"5m":5,"15m":15}.get(ctf,5))
-        for ex in self._ccxt.values():
-            try:
-                bars = []
-                since = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
-                for _ in range(28):
-                    ohlcv = ex.fetch_ohlcv(sym, timeframe=ctf, since=since, limit=1000)
-                    if not ohlcv: break
-                    bars.extend(ohlcv)
-                    since = ohlcv[-1][0] + 60000
-                    if len(ohlcv) < 1000: break
-                if not bars: continue
-                cleaned = []
-                seen = set()
-                for o in sorted(bars, key=lambda x:x[0]):
-                    if o[0] not in seen:
-                        seen.add(o[0])
-                        cleaned.append({"time": datetime.fromtimestamp(o[0]/1000).isoformat(),
-                                        "open":o[1],"high":o[2],"low":o[3],"close":o[4]})
-                return cleaned[-target:] if len(cleaned) > target else cleaned
-            except: continue
-        return []
-
-    def _synth(self, symbol, days, tf):
-        base = 2650.0 if "XAU" in symbol else 68000.0
-        mins = {"1m":1,"3m":3,"5m":5,"15m":15}.get(tf,5)
-        n = int(days * 24 * 60 / mins)
-        data = []
-        now = datetime.utcnow()
-        p = base
-        for i in range(n, 0, -1):
-            t = now - timedelta(minutes=i * mins)
-            p += random.gauss(0, base * 0.001)
-            o = p
-            c = o + random.gauss(0, base * 0.0003)
-            h = max(o, c) + abs(random.gauss(0, base * 0.0001))
-            l = min(o, c) - abs(random.gauss(0, base * 0.0001))
-            data.append({"time": t.isoformat(), "open":o, "high":h, "low":l, "close":c})
-        return data
-
-    def price(self, symbol):
-        tf = CFG["default_tf"]
-        k = f"{symbol}:{tf}:5"
-        if k in self._cache and self._cache[k]: return self._cache[k][-1]["close"]
-        return 2650.0 if "XAU" in symbol else 68000.0
-
-# ================== SELF-LEARNING STRATEGY ==================
+# ================== STRATEGY & LEARNING ==================
 class Strategy:
     def __init__(self, sid):
         self.id = sid
+        # Hyperparameters that evolve
         self.params = {
-            "rr_ratio": random.randint(3, 20),
-            "lookback_fast": random.randint(2, 6),
-            "lookback_slow": random.randint(7, 14),
-            "entry_threshold": round(random.uniform(0.0007, 0.0032), 4),
-            "atr_mult": round(random.uniform(0.9, 1.5), 2),
+            "ema_fast": random.randint(5, 21),
+            "ema_slow": random.randint(22, 200),
+            "rsi_period": random.randint(7, 14),
+            "rsi_upper": random.randint(65, 85),
+            "rsi_lower": random.randint(15, 35),
+            "atr_mult": round(random.uniform(1.0, 3.0), 2),
+            "rr_ratio": random.randint(2, 10),
+            "smc_weight": random.uniform(0, 1), # Weight for SMC/ICT vs Indicators
+            "ict_fvg_size": round(random.uniform(0.1, 0.5), 2),
+            "lookback": random.randint(20, 100),
         }
-        self.fitness = 0.0
-        self.trades = 0
-        self.wins = 0
-        self.pnl = 0.0
         self.winrate = 0.0
-        # Self learning memory
-        self.trade_history = []      # (is_win, reason, pnl)
-        self.recent_mistakes = []
+        self.trades = 0
+        self.pnl = 0.0
+        self.fitness = 0.0
+        self.history = [] # List of (is_win, reason)
 
     def mutate(self):
-        c = Strategy(self.id + "_m")
-        c.params = {k: v for k, v in self.params.items()}
-        if random.random() < 0.55:
-            c.params["rr_ratio"] = max(3, min(20, c.params["rr_ratio"] + random.randint(-3, 3)))
-        if random.random() < 0.4:
-            c.params["lookback_fast"] = max(2, min(7, c.params["lookback_fast"] + random.randint(-1, 1)))
-        if random.random() < 0.4:
-            c.params["lookback_slow"] = max(6, min(16, c.params["lookback_slow"] + random.randint(-2, 2)))
-        if random.random() < 0.35:
-            c.params["entry_threshold"] = round(max(0.0005, min(0.0038, c.params["entry_threshold"] + random.uniform(-0.0004, 0.0004))), 4)
-        return c
+        child = Strategy(self.id + "_m")
+        child.params = self.params.copy()
+        # Mutate a random parameter
+        p = random.choice(list(child.params.keys()))
+        if "period" in p or "ema" in p or "lookback" in p:
+            child.params[p] += random.choice([-1, 1])
+        elif "rsi" in p:
+            child.params[p] += random.randint(-2, 2)
+        elif "mult" in p or "weight" in p or "size" in p:
+            child.params[p] += random.uniform(-0.1, 0.1)
+        else:
+            child.params[p] += random.choice([-1, 1])
+        
+        # Constraints
+        child.params["ema_fast"] = max(2, child.params["ema_fast"])
+        child.params["ema_slow"] = max(child.params["ema_fast"] + 1, child.params["ema_slow"])
+        child.params["rr_ratio"] = max(1, child.params["rr_ratio"])
+        child.params["smc_weight"] = max(0, min(1, child.params["smc_weight"]))
+        return child
 
-    def record_trade(self, is_win, reason, pnl):
-        self.trade_history.append((is_win, reason, round(pnl, 1)))
-        if not is_win:
-            self.recent_mistakes.append(reason)
-        if len(self.trade_history) > 90:
-            self.trade_history = self.trade_history[-90:]
-        if len(self.recent_mistakes) > 12:
-            self.recent_mistakes = self.recent_mistakes[-12:]
+    def analyze_and_improve(self):
+        """Self-improvement based on trade mistakes"""
+        if len(self.history) < 10: return
+        
+        recent = self.history[-20:]
+        losses = [r for w, r in recent if not w]
+        if not losses: return
 
-    def learn_from_mistakes(self):
-        """Core self-learning: understand why wrong and adapt"""
-        if len(self.trade_history) < 12:
-            return
-        recent = self.trade_history[-22:]
-        wins = sum(1 for t in recent if t[0])
-        wr = wins / len(recent)
-        losses = [t for t in recent if not t[0]]
-        if not losses:
-            if self.params["rr_ratio"] < 17:
-                self.params["rr_ratio"] += 1
-            return
-        sl_hits = sum(1 for t in losses if "SL" in t[1])
-        reversal_losses = sum(1 for t in losses if "reversed" in t[1].lower())
-        changed = False
-        if sl_hits > len(losses) * 0.55 and self.params["rr_ratio"] > 4:
-            self.params["rr_ratio"] = max(3, self.params["rr_ratio"] - random.randint(1, 3))
-            self.recent_mistakes.append("Too many SLs -> lowered RR")
-            changed = True
-        if reversal_losses > len(losses) * 0.35:
-            self.params["entry_threshold"] = min(0.0035, self.params["entry_threshold"] + 0.00025)
-            self.params["lookback_fast"] = max(2, self.params["lookback_fast"] - 1)
-            self.recent_mistakes.append("Reversals after entry -> stricter entry")
-            changed = True
-        if wr < 0.52:
-            if self.params["rr_ratio"] > 9:
-                self.params["rr_ratio"] = max(4, self.params["rr_ratio"] - 2)
-            else:
-                self.params["rr_ratio"] += random.randint(1, 2)
-            changed = True
-            self.recent_mistakes.append(f"Low recent WR {wr*100:.0f}% -> adjusted RR")
-        if changed:
-            Log.learn(f"{self.id} learned: {self.recent_mistakes[-1]} | new RR={self.params['rr_ratio']}")
+        # Analyze failure reasons
+        reversal_count = sum(1 for r in losses if "reversal" in r.lower())
+        premature_sl = sum(1 for r in losses if "sl" in r.lower())
 
-# ================== DENSE BACKTESTER WITH MISTAKE ANALYSIS ==================
+        if reversal_count > len(losses) * 0.4:
+            # Too many reversals -> Increase Trend confirmation
+            self.params["ema_slow"] += 5
+            self.params["smc_weight"] += 0.05
+            Log.learn(f"{self.id} learning: High reversals detected -> Strengthening trend filters.")
+
+        if premature_sl > len(losses) * 0.4:
+            # Stopped out too early -> Increase SL room
+            self.params["atr_mult"] += 0.2
+            Log.learn(f"{self.id} learning: Too many premature SLs -> Increasing ATR multiplier.")
+
+# ================== BACKTESTER ==================
 class Backtester:
     @staticmethod
-    def _signal(closes, params):
-        if len(closes) < max(8, params["lookback_slow"]): return None
-        fast = sum(closes[-params["lookback_fast"]:]) / params["lookback_fast"]
-        slow = sum(closes[-params["lookback_slow"]:]) / params["lookback_slow"]
-        thr = params["entry_threshold"]
-        if fast > slow * (1 + thr): return "BUY"
-        if fast < slow * (1 - thr): return "SELL"
-        return None
+    def calculate_indicators(data, params):
+        closes = [d["close"] for d in data]
+        highs = [d["high"] for d in data]
+        lows = [d["low"] for d in data]
+        
+        # EMA
+        def ema(series, period):
+            if len(series) < period: return [0]*len(series)
+            res = [sum(series[:period])/period]
+            mult = 2 / (period + 1)
+            for i in range(period, len(series)):
+                res.append(series[i] * mult + res[-1] * (1 - mult))
+            return [0]*(period-1) + res
+
+        ema_f = ema(closes, params["ema_fast"])
+        ema_s = ema(closes, params["ema_slow"])
+        
+        # RSI
+        def rsi(series, period):
+            if len(series) < period: return [50]*len(series)
+            diffs = [series[i] - series[i-1] for i in range(1, len(series))]
+            res = [50]*period
+            for i in range(period, len(series)):
+                gain = sum([x for x in diffs[i-period:i] if x > 0]) / period
+                loss = sum([-x for x in diffs[i-period:i] if x < 0]) / period
+                rs = gain / (loss + 1e-9)
+                res.append(100 - (100 / (1 + rs)))
+            return res
+            
+        rsi_val = rsi(closes, params["rsi_period"])
+        
+        # ATR
+        def atr(h, l, c, period):
+            if len(c) < period: return [0]*len(c)
+            tr = [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1, len(c))]
+            res = [sum(tr[:period])/period]
+            for i in range(period, len(tr)):
+                res.append((res[-1] * (period-1) + tr[i]) / period)
+            return [0]*(period-1) + res
+
+        atr_val = atr(highs, lows, closes, 14)
+        
+        return ema_f, ema_s, rsi_val, atr_val
 
     @staticmethod
     def run(data, strat):
-        if len(data) < 20:
-            n = 120 + random.randint(0, 70)
-            base_wr = 0.62
-            trades = [random.random() < base_wr for _ in range(n)]
-            strat.trades = n
-            strat.wins = sum(trades)
-            strat.winrate = round(strat.wins / n * 100, 1)
-            strat.pnl = round(sum(58 if t else -25 for t in trades), 1)
-            strat.fitness = 0.6
-            return strat
-
-        cl = [d["close"] for d in data]
+        if len(data) < 200: return
+        
+        ema_f, ema_s, rsi_v, atr_v = Backtester.calculate_indicators(data, strat.params)
+        closes = [d["close"] for d in data]
+        
         trades = []
         pos = None
-        rr = strat.params.get("rr_ratio", 6)
-        atr_mult = strat.params.get("atr_mult", 1.1)
-        for i in range(8, len(cl) - 2):
+        
+        for i in range(200, len(data)):
             if pos is None:
-                sig = Backtester._signal(cl[max(0, i-10):i+1], strat.params)
-                if sig:
-                    entry = cl[i]
-                    atr = sum(abs(cl[j] - cl[j-1]) for j in range(max(0, i-5), i)) / 5 + 0.6
-                    sl = atr * atr_mult
-                    tp = sl * rr
-                    pos = {"dir": sig, "entry": entry,
-                           "sl": entry - sl if sig == "BUY" else entry + sl,
-                           "tp": entry + tp if sig == "BUY" else entry - tp}
-            if pos is not None:
-                hit = None
-                reason = ""
-                if pos["dir"] == "BUY":
-                    if cl[i] <= pos["sl"]:
-                        hit = "SL"
-                        reason = "reversed after entry" if cl[i] < pos["entry"] * 0.997 else "stopped"
-                    elif cl[i] >= pos["tp"]:
-                        hit = "TP"
+                # SIGNAL GENERATION
+                buy_sig = False
+                sell_sig = False
+                
+                # 1. Indicator Logic
+                trend_up = ema_f[i] > ema_s[i]
+                rsi_low = rsi_v[i] < strat.params["rsi_lower"]
+                
+                # 2. SMC/ICT Mock Logic (Simulated BOS/FVG based on price action)
+                # Check for a 'Gap' in the last 3 candles (FVG)
+                fvg_up = data[i-1]["low"] > data[i-3]["high"] + strat.params["ict_fvg_size"]
+                fvg_down = data[i-1]["high"] < data[i-3]["low"] - strat.params["ict_fvg_size"]
+                
+                # Hybrid Decision
+                if strat.params["smc_weight"] > 0.5:
+                    if fvg_up and trend_up: buy_sig = True
+                    if fvg_down and not trend_up: sell_sig = True
                 else:
-                    if cl[i] >= pos["sl"]:
-                        hit = "SL"
-                        reason = "reversed after entry" if cl[i] > pos["entry"] * 1.003 else "stopped"
-                    elif cl[i] <= pos["tp"]:
-                        hit = "TP"
+                    if trend_up and rsi_low: buy_sig = True
+                    if not trend_up and rsi_v[i] > strat.params["rsi_upper"]: sell_sig = True
+                
+                if buy_sig or sell_sig:
+                    entry = closes[i]
+                    sl_dist = atr_v[i] * strat.params["atr_mult"]
+                    tp_dist = sl_dist * strat.params["rr_ratio"]
+                    
+                    if buy_sig:
+                        pos = {"dir": "BUY", "entry": entry, "sl": entry - sl_dist, "tp": entry + tp_dist}
+                    else:
+                        pos = {"dir": "SELL", "entry": entry, "sl": entry + sl_dist, "tp": entry - tp_dist}
+            
+            else:
+                # TRADE MANAGEMENT
+                hit = None
+                if pos["dir"] == "BUY":
+                    if closes[i] <= pos["sl"]: hit = "SL"
+                    elif closes[i] >= pos["tp"]: hit = "TP"
+                else:
+                    if closes[i] >= pos["sl"]: hit = "SL"
+                    elif closes[i] <= pos["tp"]: hit = "TP"
+                
                 if hit:
                     is_win = (hit == "TP")
-                    if is_win:
-                        pnl = (pos["tp"] - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - pos["tp"])
-                    else:
-                        pnl = (pos["sl"] - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - pos["sl"])
-                    strat.record_trade(is_win, f"{hit}: {reason}", pnl)
+                    reason = "reversal" if not is_win and abs(closes[i]-pos["entry"]) > (pos["entry"]*0.01) else "sl"
+                    strat.history.append((is_win, reason))
                     trades.append(is_win)
                     pos = None
-        if pos is not None:
-            pnl = (cl[-1] - pos["entry"]) if pos["dir"] == "BUY" else (pos["entry"] - cl[-1])
-            is_win = pnl > 0
-            strat.record_trade(is_win, "end_of_data", pnl)
-            trades.append(is_win)
+        
+        strat.trades = len(trades)
+        if strat.trades > 0:
+            strat.winrate = (sum(trades) / strat.trades) * 100
+            strat.pnl = sum([strat.params["rr_ratio"] if t else -1 for t in trades])
+            strat.fitness = (strat.winrate / 100.0) * (strat.trades / CFG["min_trades"])
+        
+        strat.analyze_and_improve()
 
-        n = len(trades)
-        wins = sum(trades)
+# ================== EXPORTER ==================
+class StrategyExporter:
+    @staticmethod
+    def generate_manual(strat):
+        p = strat.params
+        manual = f"""
+# 🏆 ELITE XAUUSD 1M STRATEGY GUIDE: {strat.id}
+**Win Rate:** {strat.winrate:.2f}% | **Profit Factor:** {strat.pnl/max(1, strat.trades):.2f}
 
-        # === CRITICAL SAFETY NET: ALWAYS 80-200+ TRADES ===
-        # This fixes the 0 trades problem.
-        if n < 80:
-            n = 130 + random.randint(0, 70)
-            base_wr = max(0.55, min(0.75, 0.63 + (strat.params.get("rr_ratio", 8) - 9) * 0.005))
-            trades = [random.random() < base_wr for _ in range(n)]
-            wins = sum(trades)
-            for i in range(min(45, n)):
-                isw = trades[i]
-                reason = "TP" if isw else ("SL: stopped out" if random.random() > 0.42 else "reversed after entry")
-                strat.record_trade(isw, reason, 58 if isw else -25)
+## 🛠️ How to Apply Manually
+1. **Timeframe:** 1 Minute (1m)
+2. **Asset:** XAUUSD (Gold)
+3. **Indicators Setup:**
+   - Fast EMA: {p['ema_fast']}
+   - Slow EMA: {p['ema_slow']}
+   - RSI: Period {p['rsi_period']}, Upper {p['rsi_upper']}, Lower {p['rsi_lower']}
+   - ATR: Period 14 (used for SL/TP)
 
-        strat.trades = n
-        strat.wins = wins
-        strat.winrate = round(wins / n * 100, 1) if n > 0 else 0
-        strat.pnl = round(sum(58 if t else -25 for t in trades), 1)
-        strat.fitness = (strat.winrate / 100.0) * min(n / 55.0, 3.2)
+## 📈 Entry Rules
+- **BUY Entry:** 
+  - Price must be above Slow EMA ({p['ema_slow']}).
+  - Look for a Bullish Fair Value Gap (FVG) where the low of the current candle is higher than the high of the candle 2 positions back.
+  - RSI should be coming out of the Oversold zone ({p['rsi_lower']}).
+- **SELL Entry:**
+  - Price must be below Slow EMA ({p['ema_slow']}).
+  - Look for a Bearish FVG where the high of the current candle is lower than the low of the candle 2 positions back.
+  - RSI should be coming out of the Overbought zone ({p['rsi_upper']}).
 
-        if len(strat.trade_history) >= 6:
-            strat.learn_from_mistakes()
+## 🛡️ Risk Management
+- **Stop Loss (SL):** {p['atr_mult']} * ATR (14).
+- **Take Profit (TP):** SL distance * {p['rr_ratio']} (Risk-Reward 1:{p['rr_ratio']}).
 
-        if strat.winrate >= CFG["winrate_threshold"] and n >= CFG["min_trades_for_save"]:
-            save_elite_strategy(strat)
-        return strat
+## 💻 TradingView Pine Script (V5)
+```pinescript
+//@version=5
+strategy("Elite Gold 1m Strategy - {strat.id}", overlay=true)
+emaFast = ta.ema(close, {p['ema_fast']})
+emaSlow = ta.ema(close, {p['ema_slow']})
+rsiVal = ta.rsi(close, {p['rsi_period']})
+atrVal = ta.atr(14)
 
-class PopulationManager:
+longCondition = (close > emaSlow) and (rsiVal < {p['rsi_lower']})
+shortCondition = (close < emaSlow) and (rsiVal > {p['rsi_upper']})
+
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Exit Long", "Long", stop=close - {p['atr_mult']}*atrVal, limit=close + {p['atr_mult']}*atrVal * {p['rr_ratio']})
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Exit Short", "Short", stop=close + {p['atr_mult']}*atrVal, limit=close - {p['atr_mult']}*atrVal * {p['rr_ratio']})
+
+plot(emaFast, color=color.blue)
+plot(emaSlow, color=color.red)
+```
+"""
+        return manual
+
+    @staticmethod
+    def save_to_github(strat):
+        if not GH_TOKEN: return False
+        content = StrategyExporter.generate_manual(strat)
+        path = f"high_winrate_strategies/{strat.id}_wr{int(strat.winrate)}.txt"
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+        headers = {"Authorization": f"token {GH_TOKEN}"}
+        
+        # Check if exists
+        r = requests.get(url, headers=headers)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+        
+        data = {
+            "message": f"Elite Strategy Saved: {strat.id} ({strat.winrate}%)",
+            "content": base64.b64encode(content.encode()).decode(),
+            "branch": "main"
+        }
+        if sha: data["sha"] = sha
+        
+        res = requests.put(url, headers=headers, json=data)
+        return res.status_code in (200, 201)
+
+# ================== CIVILIZATION MANAGER ==================
+class Civilization:
     def __init__(self):
-        self.strategies = [Strategy(f"{COLONY_ID}_{i:03d}") for i in range(AGENTS_PER_COLONY)]
+        self.agents = [Strategy(f"gold-agent-{i:03d}") for i in range(AGENTS_PER_COLONY)]
         self.generation = 0
+        self.fetcher = DataFetcher()
 
-    def evolve(self):
-        self.strategies.sort(key=lambda s: s.fitness, reverse=True)
-        elite = self.strategies[:28]
-        new_pop = list(elite)
-        for e in elite:
-            if len(new_pop) < AGENTS_PER_COLONY:
-                new_pop.append(e.mutate())
-        while len(new_pop) < AGENTS_PER_COLONY:
-            new_pop.append(Strategy(f"{COLONY_ID}_new{random.randint(100,999)}"))
-        self.strategies = new_pop[:AGENTS_PER_COLONY]
+    async def run_cycle(self):
+        data = await self.fetcher.fetch_gold_1m()
+        if not data: return
+        
+        # 1. Backtest all agents
+        for a in self.agents:
+            Backtester.run(data, a)
+        
+        # 2. Save Elites
+        for a in self.agents:
+            if a.winrate >= CFG["winrate_threshold"] and a.trades >= CFG["min_trades"]:
+                if StrategyExporter.save_to_github(a):
+                    Log.learn(f"🏆 ELITE STRATEGY PUSHED TO GITHUB: {a.id} WR={a.winrate}%")
+
+        # 3. Evolve
+        self.agents.sort(key=lambda x: x.fitness, reverse=True)
+        elite = self.agents[:20]
+        new_gen = list(elite)
+        while len(new_gen) < AGENTS_PER_COLONY:
+            parent = random.choice(elite)
+            new_gen.append(parent.mutate())
+        
+        self.agents = new_gen
         self.generation += 1
+        Log.i(f"Gen {self.generation} complete. Best WR: {self.agents[0].winrate:.2f}%")
 
-    def get_all_agents(self):
-        # ALL agents are always active - no sleeping
-        return self.strategies
-
-fetcher = DataFetcher()
-pop = PopulationManager()
-
-# BOOTSTRAP: Force realistic activity for all agents at startup
-# so the table never starts at 0 trades. Uses synthetic long data.
-print("BOOTSTRAP: Forcing 80-200+ trades on all agents...")
-import random
-from datetime import datetime, timedelta
-boot_data = []
-p = 2650.0
-for i in range(2500, 0, -1):
-    p += random.gauss(0, 1.6)
-    boot_data.append({"time": (datetime.utcnow() - timedelta(minutes=i*5)).isoformat(),
-                      "open": p, "high": p+1.1, "low": p-0.9, "close": p + random.gauss(0, 0.5)})
-for s in pop.strategies:
-    Backtester.run(boot_data, s)
-print("BOOTSTRAP done. All agents now have trades.")
-
+civ = Civilization()
 
 async def main_loop():
-    tick = 0
-    Log.i("ULTRA-ACTIVE SELF-LEARNING CIVILIZATION STARTED")
-    Log.i(f"All {AGENTS_PER_COLONY} agents are ULTRA ACTIVE every cycle. They learn from mistakes and improve continuously.")
+    Log.i("XAUUSD 1M CIVILIZATION STARTING...")
     while True:
         try:
-            tick += 1
-            tf = CFG["default_tf"]
-            # EVERY agent runs on fresh long data - ULTRA ACTIVE, no one sleeps
-            for sym in CFG["symbols"]:
-                data = await fetcher.fetch(sym, tf, CFG["backtest_days"])
-                if data and len(data) > 65:
-                    for s in pop.get_all_agents():   # <--- ALL 100 agents every time
-                        Backtester.run(data, s)
-            if tick % 3 == 0:
-                pop.evolve()
-                Log.i(f"Gen {pop.generation} | All agents active + self-learning")
-            if tick % 9 == 0:
-                saved = 0
-                for s in sorted(pop.strategies, key=lambda x: x.winrate, reverse=True)[:12]:
-                    if save_elite_strategy(s):
-                        saved += 1
-                if saved:
-                    Log.learn(f"{saved} new >=70% strategies saved (local + GitHub)")
-            if tick % 5 == 0:
-                top = max(pop.strategies, key=lambda s: s.fitness)
-                Log.i(f"Best learner: {top.id} WR={top.winrate}% trades={top.trades} RR=1:{top.params['rr_ratio']}")
+            await civ.run_cycle()
             await asyncio.sleep(CFG["data_refresh_s"])
         except Exception as e:
-            Log.w(str(e))
-            await asyncio.sleep(7)
+            Log.w(f"Loop error: {e}")
+            await asyncio.sleep(10)
 
 threading.Thread(target=lambda: asyncio.run(main_loop()), daemon=True).start()
-time.sleep(1.0)
 
+# ================== GRADIO UI ==================
 import gradio as gr
 
-def get_table():
+def get_dashboard():
     rows = []
-    for s in sorted(pop.strategies, key=lambda x: x.fitness, reverse=True)[:40]:
-        status = "IMPROVING" if len(getattr(s, "trade_history", [])) > 8 else "ULTRA ACTIVE"
-        rows.append([
-            s.id[-8:],
-            f"{s.winrate:.1f}%",
-            s.trades,
-            f"{s.pnl:.0f}",
-            f"1:{s.params.get('rr_ratio', 6)}",
-            status
-        ])
+    for a in sorted(civ.agents, key=lambda x: x.winrate, reverse=True)[:20]:
+        rows.append([a.id, f"{a.winrate:.2f}%", a.trades, f"{a.pnl:.1f}", f"RR 1:{a.params['rr_ratio']}"])
     return rows
 
-def get_status():
-    elites = [s for s in pop.strategies if s.winrate >= CFG["winrate_threshold"]]
-    return f"Elites (>=70% WR) in population: {len(elites)} | Generation: {pop.generation}"
+with gr.Blocks(title="XAUUSD Gold Guardian") as demo:
+    gr.Markdown("# 🏛️ XAUUSD 1m AI Civilization\nSearching for the 90% Win-Rate Holy Grail")
+    gr.DataFrame(value=get_dashboard, headers=["Agent ID", "Win Rate", "Trades", "PNL", "Config"], every=10)
+    gr.Markdown(f"**Generation:** {civ.generation}", every=10)
 
-with gr.Blocks(title="Civilization Guardian - Self Learning", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("**AI Trading Civilization — ULTRA ACTIVE + SELF-LEARNING**<br>All 100 agents active every cycle | Learn from mistakes (SL vs reversal) | Continuously improve parameters | >=70% WR strategies auto-saved to GitHub")
-    gr.DataFrame(value=get_table, headers=["Agent", "Win Rate", "Trades", "PNL", "RR", "Status"], every=4)
-    gr.Markdown(get_status, every=5)
-    gr.Markdown("Real data first (Yahoo + CCXT + Cache). Agents analyze why they lose and get smarter every generation. High performers are saved forever.")
-
-demo.queue().launch(server_name="0.0.0.0", server_port=7860, quiet=True)
+demo.queue().launch(server_name="0.0.0.0", server_port=7860)
