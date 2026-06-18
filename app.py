@@ -3,8 +3,8 @@
 🏛️ AI TRADING CIVILIZATION: XAUUSD 1M GOLD EDITION
 - Focus: XAUUSD 1-Minute Chart exclusively.
 - Goal: 80-90% Win Rate via self-improving AI Agents.
-- Tech: SMC, ICT, Indicators, Genetic Evolution, & Mistake Analysis.
-- Output: Detailed Manuals + TradingView Pine Script for Elite Strategies.
+- Tech: SMC, ICT, Indicators, Genetic Evolution, & Mistake Analysis (SMC Liquidity sweeps).
+- Output: Detailed Manuals for Elite Strategies.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 COLONY_ID = os.getenv("COLONY_ID", "gold-colony-1")
 AGENTS_PER_COLONY = 100
 # Fallback to the user's provided token and repo if not specified in env
-GH_TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+GH_TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or ""
 GITHUB_REPO = os.getenv("GITHUB_REPO") or "femidaali537-afk/ai-trading-civilization"
 
 CFG = {
@@ -245,14 +245,32 @@ class Backtester:
 
         atr_val = atr(highs, lows, closes, 14)
         
-        return ema_f, ema_s, rsi_val, atr_val
+        # SMC: Swing Highs and Swing Lows (Liquidity Pools)
+        lookback = params.get("lookback", 50)
+        bsl = [0] * len(data)
+        ssl = [0] * len(data)
+        
+        for idx in range(lookback, len(data)):
+            window_highs = highs[idx-lookback:idx]
+            window_lows = lows[idx-lookback:idx]
+            bsl[idx] = max(window_highs) if window_highs else highs[idx]
+            ssl[idx] = min(window_lows) if window_lows else lows[idx]
+            
+        # For the first lookback candles, initialize with the current high/low
+        for idx in range(min(lookback, len(data))):
+            bsl[idx] = highs[idx]
+            ssl[idx] = lows[idx]
+        
+        return ema_f, ema_s, rsi_val, atr_val, bsl, ssl
 
     @staticmethod
     def run(data, strat):
         if len(data) < 200: return
         
-        ema_f, ema_s, rsi_v, atr_v = Backtester.calculate_indicators(data, strat.params)
+        ema_f, ema_s, rsi_v, atr_v, bsl, ssl = Backtester.calculate_indicators(data, strat.params)
         closes = [d["close"] for d in data]
+        highs = [d["high"] for d in data]
+        lows = [d["low"] for d in data]
         
         trades = []
         pos = None
@@ -267,18 +285,30 @@ class Backtester:
                 trend_up = ema_f[i] > ema_s[i]
                 rsi_low = rsi_v[i] < strat.params["rsi_lower"]
                 
-                # 2. SMC/ICT Mock Logic (Simulated BOS/FVG based on price action)
-                # Check for a 'Gap' in the last 3 candles (FVG)
-                fvg_up = data[i-1]["low"] > data[i-3]["high"] + strat.params["ict_fvg_size"]
-                fvg_down = data[i-1]["high"] < data[i-3]["low"] - strat.params["ict_fvg_size"]
+                # 2. SMC/ICT FVG Logic (Fair Value Gap)
+                fvg_up = lows[i-1] > highs[i-3] + strat.params["ict_fvg_size"]
+                fvg_down = highs[i-1] < lows[i-3] - strat.params["ict_fvg_size"]
                 
-                # Hybrid Decision
+                # 3. SMC/ICT Liquidity Sweep Logic (Grab)
+                # Sweep Sell-Side Liquidity (SSL): current low swept previous SSL, but current close is above it
+                swept_ssl = lows[i] < ssl[i] and closes[i] > ssl[i]
+                # Sweep Buy-Side Liquidity (BSL): current high swept previous BSL, but current close is below it
+                swept_bsl = highs[i] > bsl[i] and closes[i] < bsl[i]
+                
+                # Hybrid SMC Liquidity Sweep & Trend Decision
                 if strat.params["smc_weight"] > 0.5:
-                    if fvg_up and trend_up: buy_sig = True
-                    if fvg_down and not trend_up: sell_sig = True
+                    # SMC-centric: Buy if we swept sell-side liquidity (SSL) AND have bullish FVG or trend confirmation
+                    if swept_ssl and (fvg_up or trend_up): 
+                        buy_sig = True
+                    # Sell if we swept buy-side liquidity (BSL) AND have bearish FVG or trend confirmation
+                    elif swept_bsl and (fvg_down or not trend_up): 
+                        sell_sig = True
                 else:
-                    if trend_up and rsi_low: buy_sig = True
-                    if not trend_up and rsi_v[i] > strat.params["rsi_upper"]: sell_sig = True
+                    # Trend/Indicator-centric with FVG confirmation
+                    if trend_up and rsi_low: 
+                        buy_sig = True
+                    elif not trend_up and rsi_v[i] > strat.params["rsi_upper"]: 
+                        sell_sig = True
                 
                 if buy_sig or sell_sig:
                     entry = closes[i]
@@ -332,67 +362,72 @@ class StrategyExporter:
         profit_factor = (total_wins_value / max(1, total_losses_value)) if total_losses_value > 0 else total_wins_value
 
         manual = f"""
-# 🏆 ELITE XAUUSD 1M TRADING MANUAL: {strat.name}
+# 🏆 ELITE XAUUSD 1M SMC LIQUIDITY SWEEP MANUAL: {strat.name}
 **Agent Name:** {strat.name}
 **Win Rate:** {strat.winrate:.2f}% | **Total Trades:** {strat.trades} | **Profit Factor:** {profit_factor:.2f}
 
 ---
 
 ## 📖 STRATEGY OVERVIEW
-This is a high-probability scalping strategy specifically evolved for the XAUUSD (Gold) 1-Minute timeframe. It combines structural market analysis (SMC/ICT) with precise momentum filters.
+This is an elite Smart Money Concepts (SMC) Liquidity Sweep and Fair Value Gap (FVG) scalping strategy specifically evolved for the XAUUSD (Gold) 1-Minute timeframe. It targets major liquidity pools (Buy-Side and Sell-Side) to enter trades with high-probability institutional order flow.
 
-## 🛠️ INDICATOR SETUP (Manual Configuration)
-To execute this strategy manually, set up your chart as follows:
+## 🛠️ CHART SETUP & INDICATORS
+To execute this strategy, set up your chart as follows:
 1. **Timeframe:** 1 Minute (1m).
-2. **Fast Exponential Moving Average (EMA):** Period {p['ema_fast']} (Color: Blue).
-3. **Slow Exponential Moving Average (EMA):** Period {p['ema_slow']} (Color: Red).
-4. **Relative Strength Index (RSI):** 
-   - Period: {p['rsi_period']}
-   - Overbought Level: {p['rsi_upper']}
-   - Oversold Level: {p['rsi_lower']}
-5. **Average True Range (ATR):** Period 14 (Used for dynamic risk management).
+2. **Exponential Moving Averages (EMAs):**
+   - **Fast EMA:** Period {p['ema_fast']} (Trend momentum filter).
+   - **Slow EMA:** Period {p['ema_slow']} (Major trend filter).
+3. **Relative Strength Index (RSI):** Period {p['rsi_period']} (used to confirm momentum pullbacks).
+4. **Average True Range (ATR):** Period 14 (used for dynamic stop-loss placement).
+
+---
+
+## 🏛️ SMC & ICT CONCEPTS (How to identify them)
+
+### 1. Buy-Side Liquidity (BSL) & Sell-Side Liquidity (SSL)
+- **BSL (Buy-Side Liquidity):** Clustered above the swing highs of the previous {p['lookback']} candles. These are stop-losses of retail short sellers.
+- **SSL (Sell-Side Liquidity):** Clustered below the swing lows of the previous {p['lookback']} candles. These are stop-losses of retail buyers.
+
+### 2. Liquidity Sweep (Stop Hunt)
+- **Bullish Sweep:** Price dips below the SSL level but rejects and closes back above it. This indicates smart money has filled their buy orders using retail stop-losses.
+- **Bearish Sweep:** Price pushes above the BSL level but rejects and closes back below it. This indicates smart money has filled their sell orders using retail buy stops.
+
+### 3. Fair Value Gap (FVG)
+- **Bullish FVG:** A 3-candle imbalance where the Low of Candle 3 is greater than the High of Candle 1 by at least {p['ict_fvg_size']} points.
+- **Bearish FVG:** A 3-candle imbalance where the High of Candle 3 is less than the Low of Candle 1 by at least {p['ict_fvg_size']} points.
 
 ---
 
 ## 📈 ENTRY RULES (Step-by-Step)
 
 ### 🟢 BUY ENTRY (Long)
-1. **Trend Confirmation:** Price must be clearly trading ABOVE the Slow EMA ({p['ema_slow']}).
-2. **Structural Trigger (SMC/ICT):** Look for a **Bullish Fair Value Gap (FVG)**.
-   - *What to look for:* A 3-candle sequence where the Low of Candle 3 is higher than the High of Candle 1, leaving a "gap" in the price action.
-3. **Momentum Confirmation:** The RSI ({p['rsi_period']}) should be emerging from the Oversold zone (below {p['rsi_lower']}) or showing a bullish divergence.
-4. **Execution:** Enter Long at the close of the candle that confirms the FVG and Trend alignment.
+1. **Trend Filter:** Price is trading ABOVE the Slow EMA ({p['ema_slow']}).
+2. **Liquidity Sweep (Trigger):** The current candle sweeps below the Sell-Side Liquidity (SSL) level and closes back above it.
+3. **Structure Confirmation:** A Bullish Fair Value Gap (FVG) is formed, or the Fast EMA ({p['ema_fast']}) is above the Slow EMA.
+4. **Execution:** Enter Long immediately on the candle close after the Liquidity Sweep is confirmed.
 
 ### 🔴 SELL ENTRY (Short)
-1. **Trend Confirmation:** Price must be clearly trading BELOW the Slow EMA ({p['ema_slow']}).
-2. **Structural Trigger (SMC/ICT):** Look for a **Bearish Fair Value Gap (FVG)**.
-   - *What to look for:* A 3-candle sequence where the High of Candle 3 is lower than the Low of Candle 1.
-3. **Momentum Confirmation:** The RSI ({p['rsi_period']}) should be emerging from the Overbought zone (above {p['rsi_upper']}) or showing a bearish divergence.
-4. **Execution:** Enter Short at the close of the candle that confirms the FVG and Trend alignment.
+1. **Trend Filter:** Price is trading BELOW the Slow EMA ({p['ema_slow']}).
+2. **Liquidity Sweep (Trigger):** The current candle sweeps above the Buy-Side Liquidity (BSL) level and closes back below it.
+3. **Structure Confirmation:** A Bearish Fair Value Gap (FVG) is formed, or the Fast EMA ({p['ema_fast']}) is below the Slow EMA.
+4. **Execution:** Enter Short immediately on the candle close after the Liquidity Sweep is confirmed.
 
 ---
 
 ## 🛡️ RISK MANAGEMENT & EXIT STRATEGY
 
-### 📉 Stop Loss (SL) - The Safety Net
-Stop loss is based on current market volatility (ATR).
-- **Calculation:** {p['atr_mult']} * ATR(14).
-- **Placement:** Place the SL below the most recent swing low for BUYs, or above the most recent swing high for SELLs, but no further than the ATR calculation.
+### 📉 Stop Loss (SL)
+Stop loss is placed dynamically based on market volatility using the ATR(14) indicator.
+- **Calculation:** {p['atr_mult']} * ATR(14) points from your entry price.
+- **Placement:** Place the SL below the sweep low for BUYs, or above the sweep high for SELLs.
 
-### 🎯 Take Profit (TP) - The Goal
-This strategy uses a fixed Risk-to-Reward ratio to ensure long-term profitability.
+### 🎯 Take Profit (TP)
+This strategy uses a fixed Risk-to-Reward (RR) ratio to guarantee profitability over the long run.
 - **Ratio:** 1 : {p['rr_ratio']}
-- **Calculation:** If your SL is 20 pips, your TP must be {p['rr_ratio']} * 20 = {p['rr_ratio']*20} pips.
+- **Calculation:** TP is set at exactly {p['rr_ratio']} times your Stop Loss distance. If your SL is 20 pips, your TP is {p['rr_ratio'] * 20} pips.
 
 ---
-
-## ⚠️ TRADE FILTERS (When NOT to trade)
-- **Flat Market:** If the Fast EMA and Slow EMA are intertwining (moving sideways), DO NOT trade.
-- **High Impact News:** Avoid entries 15 minutes before and after major USD/Gold news events (CPI, FOMC, NFP).
-- **Extreme RSI:** If RSI is already above 80 for a BUY or below 20 for a SELL, wait for a pullback.
-
----
-**Manual Generated by AI Civilization Guardian - Agent {strat.name}**
+**Generated by AI Trading Civilization Guardian - Agent {strat.name}**
 """
         return manual
 
