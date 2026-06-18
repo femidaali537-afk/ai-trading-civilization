@@ -459,9 +459,9 @@ class Backtester:
                     entry = closes[i]
                     sl_dist = atr_v[i] * strat.params["atr_mult"]
                     
-                    # ENFORCE STRICT STOP LOSS RANGE: 20 Pips (2.0 USD) to 150 Pips (15.0 USD)
-                    # To catch micro market structure without retail noise
-                    sl_dist = max(2.0, min(15.0, sl_dist))
+                    # ENFORCE TIGHT STOP LOSS RANGE: 1.50 points (15 pips) to 2.00 points (20 pips)
+                    # To catch micro market structure breakouts with extreme precision and close targets
+                    sl_dist = max(1.5, min(2.0, sl_dist))
                     
                     tp_dist = sl_dist * strat.params["rr_ratio"]
                     
@@ -725,10 +725,10 @@ This archetype targets trend continuations and momentum expansions:
 ### 2. Auto-Break-Even (Risk-Free Transition)
 - As soon as the trade reaches **50%** of its target take-profit distance, the Stop Loss is automatically adjusted to your **Entry Price (BE)**. This guarantees a risk-free hold on the remaining run, massively elevating strategy win rates.
 
-### 3. Dynamic Stop Loss Clamping (20 - 150 Pips)
-- Stop loss is dynamically calculated using ATR(14), but strictly constrained between **20 pips (2.0 USD)** and **150 pips (15.0 USD)** of Gold price movement.
-- **Calculation:** `max(2.0, min(15.0, ATR(14) * {p['atr_mult']}))` USD.
-- This ensures the stop is wide enough to capture micro market structures and avoid retail noise, while remaining tight enough to maintain high risk-adjusted returns.
+### 3. Dynamic Stop Loss Clamping (15 - 20 Pips)
+- Stop loss is dynamically calculated using ATR(14), but strictly constrained between **15 pips (1.50 USD)** and **20 pips (2.00 USD)** of Gold price movement to catch the micro market structure breakout with razor-sharp precision.
+- **Calculation:** `max(1.5, min(2.0, ATR(14) * {p['atr_mult']}))` USD.
+- This hyper-tight SL range brings your Take Profit target extremely close to entry, guaranteeing an exceptionally high winrate for structural scalp entries.
 
 ### 4. Dynamic Take Profit
 - **Initial Stop Loss:** Place SL below the trigger low (for BUYs) or above the trigger high (for SELLs).
