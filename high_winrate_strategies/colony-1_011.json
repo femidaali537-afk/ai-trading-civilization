@@ -1,0 +1,25 @@
+{
+  "id": "colony-1_011",
+  "winrate": 70.9,
+  "trades": 196,
+  "pnl": 6637,
+  "params": {
+    "rr_ratio": 19,
+    "lookback_fast": 5,
+    "lookback_slow": 8,
+    "entry_threshold": 0.0030499999999999998,
+    "atr_mult": 0.99
+  },
+  "fitness": 2.2688,
+  "saved_at": "2026-06-18T08:55:34.509202",
+  "recent_mistakes": [
+    "reversed after entry",
+    "SL: stopped out",
+    "reversed after entry",
+    "reversed after entry",
+    "SL: stopped out",
+    "reversed after entry",
+    "reversed after entry",
+    "Reversals after entry -> stricter entry"
+  ]
+}
