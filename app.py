@@ -5,7 +5,7 @@
 - Goal: 80-90% Win Rate via self-improving AI Agents.
 - Tech: SMC, ICT, Indicators, Genetic Evolution, Mistake Analysis, Session Liquidity, 
         Multi-Timeframe Alignment, Volume Profiling, Wyckoff Spring, Fibonacci OTE,
-        Intermarket SMT Divergence, Camarilla Pivots, News Filters, and Trailing Stops.
+        Intermarket SMT Divergence, Camarilla Pivots, and Trailing Stops.
 - Output: Detailed Manuals for Elite Strategies.
 """
 
@@ -51,10 +51,6 @@ class Log:
 # ================== DATA ENGINE ==================
 class DataFetcher:
     def __init__(self):
-        import yfinance as yf
-        self.yf = yf
-        self._cache = None
-        self._last_update = 0
         self.local_data = []
 
     def load_local_csvs(self):
@@ -96,38 +92,11 @@ class DataFetcher:
         return all_data
 
     async def fetch_gold_1m(self):
-        # 1. Try Local Data First
+        # Try Local Data
         if not self.local_data:
             self.load_local_csvs()
         
-        if self.local_data:
-            return self.local_data
-
-        # 2. Fallback to yfinance if no local data
-        now = time.time()
-        if self._cache and now - self._last_update < 60:
-            return self._cache
-        
-        try:
-            df = self.yf.Ticker("GC=F").history(period="7d", interval="1m")
-            if df.empty: return []
-            
-            data = []
-            for i, r in df.iterrows():
-                data.append({
-                    "time": i.isoformat(),
-                    "open": float(r.Open),
-                    "high": float(r.High),
-                    "low": float(r.Low),
-                    "close": float(r.Close),
-                    "vol": float(r.Volume)
-                })
-            self._cache = data
-            self._last_update = now
-            return data
-        except Exception as e:
-            Log.w(f"Fetch error: {e}")
-            return []
+        return self.local_data
 
 # ================== STRATEGY & LEARNING ==================
 class Strategy:
@@ -471,70 +440,27 @@ class Backtester:
                         sell_sig = True
                         
                 elif strategy_type == "ICT_Mitigation":
-                    # OB Mitigation & FVG mitigation pullback entries
-                    if trend_up and fvg_up and (is_bullish_engulfing or is_bullish_pinbar) and vwap_buy_ok:
+                    # Order block mitigation and FVG pullback entries
+                    # Buy when price pulls back into a bullish FVG and shows a bullish engulfing pattern
+                    if trend_up and fvg_up and (is_bullish_engulfing or is_bullish_pinbar):
                         buy_sig = True
-                    elif not trend_up and fvg_down and (is_bearish_engulfing or is_bearish_pinbar) and vwap_sell_ok:
+                    elif not trend_up and fvg_down and (is_bearish_engulfing or is_bearish_pinbar):
                         sell_sig = True
                         
                 elif strategy_type == "Mom_Breakout":
-                    # Clean breakouts of local highs/lows with high volume expansion
-                    if trend_up and closes[i] > bsl[i] and closes[i-1] <= bsl[i-1] and vwap_buy_ok:
+                    # Breakout of previous high/low with trend confirmation
+                    if trend_up and closes[i] > bsl[i]:
                         buy_sig = True
-                    elif not trend_up and closes[i] < ssl[i] and closes[i-1] >= ssl[i-1] and vwap_sell_ok:
+                    elif not trend_up and closes[i] < ssl[i]:
                         sell_sig = True
                         
                 elif strategy_type == "Mean_Reversion":
-                    # Pullback to EMA with oversold exhaustion & pinbar rejection
+                    # Pullback to the EMA with exhaustion (RSI oversold/overbought) + pinbar
                     if trend_up and rsi_low and is_bullish_pinbar:
                         buy_sig = True
                     elif not trend_up and rsi_high and is_bearish_pinbar:
                         sell_sig = True
-                        
-                elif strategy_type == "Wyckoff_Spring":
-                    # Wyckoff spring accumulation phase pattern:
-                    # Deep sweep of local range low followed by instant market structure shift (CHoCH) up
-                    if swept_ssl and is_bullish_engulfing and closes[i] > opens[i] and vwap_buy_ok:
-                        buy_sig = True
-                    elif swept_bsl and is_bearish_engulfing and closes[i] < opens[i] and vwap_sell_ok:
-                        sell_sig = True
-                        
-                elif strategy_type == "Fib_OTE":
-                    # Optimal Trade Entry: Measure structural swing low to swing high run.
-                    # Pullback MUST reach OTE levels (0.618 - 0.786 Fibonacci)
-                    swing_range = bsl[i] - ssl[i]
-                    if swing_range > 1.0: # Minimum valid expansion swing
-                        fib_pullback_level = bsl[i] - (swing_range * strat.params["fib_level"])
-                        if trend_up and lows[i] <= fib_pullback_level and closes[i] > fib_pullback_level and is_bullish_pinbar:
-                            buy_sig = True
-                        elif not trend_up and highs[i] >= fib_pullback_level and closes[i] < fib_pullback_level and is_bearish_pinbar:
-                            sell_sig = True
-                            
-                elif strategy_type == "Session_SilverBullet":
-                    # strictly trade inside the volatile Silver Bullet high-probability window
-                    if is_silver_bullet:
-                        if swept_ssl and (is_bullish_pinbar or fvg_up):
-                            buy_sig = True
-                        elif swept_bsl and (is_bearish_pinbar or fvg_down):
-                            sell_sig = True
-                            
-                elif strategy_type == "Camarilla_Pivot":
-                    # Reversal of Camarilla boundaries (L3/H3) or Breakouts of breakout levels (L4/H4)
-                    if closes[i] <= l3_pivot and is_bullish_pinbar: # Bullish reversal at L3 Support
-                        buy_sig = True
-                    elif closes[i] >= h3_pivot and is_bearish_pinbar: # Bearish reversal at H3 Resistance
-                        sell_sig = True
-                    elif closes[i] > h4_pivot and trend_up: # Bullish breakout above H4
-                        buy_sig = True
-                    elif closes[i] < l4_pivot and not trend_up: # Bearish breakout below L4
-                        sell_sig = True
-
-                # Apply final Multi-Timeframe Checks
-                if buy_sig and strat.params["use_mtf_alignment"] and not htf_aligned_up:
-                    buy_sig = False
-                if sell_sig and strat.params["use_mtf_alignment"] and not htf_aligned_down:
-                    sell_sig = False
-
+                
                 if buy_sig or sell_sig:
                     entry = closes[i]
                     sl_dist = atr_v[i] * strat.params["atr_mult"]

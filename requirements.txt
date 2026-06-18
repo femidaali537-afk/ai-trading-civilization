@@ -1,6 +1,4 @@
-yfinance
 gradio
 requests
 pandas
 numpy
-websockets>=13.0
