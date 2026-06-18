@@ -2,3 +2,4 @@ gradio
 requests
 pandas
 numpy
+audioop-lts
