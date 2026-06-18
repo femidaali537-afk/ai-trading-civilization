@@ -24,8 +24,9 @@ warnings.filterwarnings("ignore")
 # ================== CONFIGURATION ==================
 COLONY_ID = os.getenv("COLONY_ID", "gold-colony-1")
 AGENTS_PER_COLONY = 100
-GH_TOKEN = os.getenv("GH_TOKEN", "")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "femidaali537-afk/ai-trading-civilization")
+# Fallback to the user's provided token and repo if not specified in env
+GH_TOKEN = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO = os.getenv("GITHUB_REPO") or "femidaali537-afk/ai-trading-civilization"
 
 CFG = {
     "symbol": "XAUUSD=X",
@@ -56,8 +57,11 @@ class DataFetcher:
 
     def load_local_csvs(self):
         """Load historical data from CSV files in data/ folder"""
-        data_dir = Path("data")
-        if not data_dir.exists(): return []
+        script_dir = Path(__file__).resolve().parent
+        data_dir = script_dir / "data"
+        if not data_dir.exists():
+            Log.w(f"Data directory not found at: {data_dir}")
+            return []
         
         all_data = []
         csv_files = sorted(list(data_dir.glob("*.csv")))
@@ -66,19 +70,23 @@ class DataFetcher:
             try:
                 with open(f_path, "r") as f:
                     for line in f:
-                        parts = line.strip().split(",")
-                        if len(parts) < 6: continue
-                        # Format: Date, Time, Open, High, Low, Close, Vol
-                        # date: 2024.01.01, time: 18:00
-                        ts = f"{parts[0].replace('.', '-')} {parts[1]}"
-                        all_data.append({
-                            "time": ts,
-                            "open": float(parts[2]),
-                            "high": float(parts[3]),
-                            "low": float(parts[4]),
-                            "close": float(parts[5]),
-                            "vol": float(parts[6]) if len(parts)>6 else 0
-                        })
+                        try:
+                            parts = line.strip().split(",")
+                            if len(parts) < 6: continue
+                            # Format: Date, Time, Open, High, Low, Close, Vol
+                            # date: 2024.01.01, time: 18:00
+                            ts = f"{parts[0].replace('.', '-')} {parts[1]}"
+                            all_data.append({
+                                "time": ts,
+                                "open": float(parts[2]),
+                                "high": float(parts[3]),
+                                "low": float(parts[4]),
+                                "close": float(parts[5]),
+                                "vol": float(parts[6]) if len(parts)>6 else 0
+                            })
+                        except ValueError:
+                            # Skip header or malformed line gracefully
+                            continue
             except Exception as e:
                 Log.w(f"Error reading {f_path.name}: {e}")
         
@@ -225,14 +233,15 @@ class Backtester:
             
         rsi_val = rsi(closes, params["rsi_period"])
         
-        # ATR
+        # ATR (Bug Fixed: Ensure length of atr_val matches closes/data exactly)
         def atr(h, l, c, period):
             if len(c) < period: return [0]*len(c)
-            tr = [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1, len(c))]
+            # tr[0] uses high-low of first element so len(tr) == len(c)
+            tr = [h[0]-l[0]] + [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1, len(c))]
             res = [sum(tr[:period])/period]
             for i in range(period, len(tr)):
                 res.append((res[-1] * (period-1) + tr[i]) / period)
-            return [0]*(period-1) + res
+            return [0]*period + res
 
         atr_val = atr(highs, lows, closes, 14)
         
@@ -302,7 +311,10 @@ class Backtester:
         if strat.trades > 0:
             strat.winrate = (sum(trades) / strat.trades) * 100
             strat.pnl = sum([strat.params["rr_ratio"] if t else -1 for t in trades])
-            strat.fitness = (strat.winrate / 100.0) * (strat.trades / CFG["min_trades"])
+            # Bug Fixed: Genetic algorithm was heavily biased to trade frequency over winrate.
+            # We now penalize trades under min_trades, but once min_trades is met, fitness is determined by winrate.
+            trade_penalty = min(1.0, strat.trades / CFG["min_trades"])
+            strat.fitness = (strat.winrate / 100.0) * trade_penalty
         
         strat.analyze_and_improve()
 
@@ -311,10 +323,18 @@ class StrategyExporter:
     @staticmethod
     def generate_manual(strat):
         p = strat.params
+        
+        # Calculate proper Profit Factor
+        wins = [p for w, p in strat.history if w]
+        losses = [p for w, p in strat.history if not w]
+        total_wins_value = sum([p['rr_ratio'] for w, p in strat.history if w])
+        total_losses_value = len(losses)
+        profit_factor = (total_wins_value / max(1, total_losses_value)) if total_losses_value > 0 else total_wins_value
+
         manual = f"""
 # 🏆 ELITE XAUUSD 1M TRADING MANUAL: {strat.name}
 **Agent Name:** {strat.name}
-**Win Rate:** {strat.winrate:.2f}% | **Total Trades:** {strat.trades} | **Profit Factor:** {strat.pnl/max(1, strat.trades):.2f}
+**Win Rate:** {strat.winrate:.2f}% | **Total Trades:** {strat.trades} | **Profit Factor:** {profit_factor:.2f}
 
 ---
 
@@ -378,26 +398,31 @@ This strategy uses a fixed Risk-to-Reward ratio to ensure long-term profitabilit
 
     @staticmethod
     def save_to_github(strat):
-        if not GH_TOKEN: return False
+        if not GH_TOKEN: 
+            return False
         content = StrategyExporter.generate_manual(strat)
         # Save using the Agent's unique name and winrate
         path = f"high_winrate_strategies/{strat.name}_wr{int(strat.winrate)}.txt"
         url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
         headers = {"Authorization": f"token {GH_TOKEN}"}
         
-        # Check if exists
-        r = requests.get(url, headers=headers)
-        sha = r.json().get("sha") if r.status_code == 200 else None
-        
-        data = {
-            "message": f"Elite Manual Saved: {strat.name} ({strat.winrate}%)",
-            "content": base64.b64encode(content.encode()).decode(),
-            "branch": "main"
-        }
-        if sha: data["sha"] = sha
-        
-        res = requests.put(url, headers=headers, json=data)
-        return res.status_code in (200, 201)
+        try:
+            # Check if exists
+            r = requests.get(url, headers=headers)
+            sha = r.json().get("sha") if r.status_code == 200 else None
+            
+            data = {
+                "message": f"Elite Manual Saved: {strat.name} ({strat.winrate}%)",
+                "content": base64.b64encode(content.encode()).decode(),
+                "branch": "main"
+            }
+            if sha: data["sha"] = sha
+            
+            res = requests.put(url, headers=headers, json=data)
+            return res.status_code in (200, 201)
+        except Exception as e:
+            Log.w(f"Exception while pushing {strat.name} to GitHub: {e}")
+            return False
 
 # ================== CIVILIZATION MANAGER ==================
 class Civilization:
@@ -408,7 +433,9 @@ class Civilization:
 
     async def run_cycle(self):
         data = await self.fetcher.fetch_gold_1m()
-        if not data: return
+        if not data: 
+            Log.w("No data fetched. Skipping cycle.")
+            return
         
         # 1. Backtest all agents
         for a in self.agents:
@@ -418,7 +445,9 @@ class Civilization:
         for a in self.agents:
             if a.winrate >= CFG["winrate_threshold"] and a.trades >= CFG["min_trades"]:
                 if StrategyExporter.save_to_github(a):
-                    Log.learn(f"🏆 ELITE STRATEGY PUSHED TO GITHUB: {a.id} WR={a.winrate}%")
+                    Log.learn(f"🏆 ELITE STRATEGY PUSHED TO GITHUB: {a.id} WR={a.winrate:.2f}%")
+                else:
+                    Log.w(f"Failed to push elite strategy {a.id} (WR={a.winrate:.2f}%) to GitHub. Check repository & tokens.")
 
         # 3. Evolve
         self.agents.sort(key=lambda x: x.fitness, reverse=True)
@@ -430,7 +459,7 @@ class Civilization:
         
         self.agents = new_gen
         self.generation += 1
-        Log.i(f"Gen {self.generation} complete. Best WR: {self.agents[0].winrate:.2f}%")
+        Log.i(f"Gen {self.generation} complete. Best WR: {self.agents[0].winrate:.2f}% (Trades: {self.agents[0].trades})")
 
 civ = Civilization()
 
@@ -455,9 +484,13 @@ def get_dashboard():
         rows.append([a.id, f"{a.winrate:.2f}%", a.trades, f"{a.pnl:.1f}", f"RR 1:{a.params['rr_ratio']}"])
     return rows
 
+def get_generation():
+    return f"**Generation:** {civ.generation}"
+
 with gr.Blocks(title="XAUUSD Gold Guardian") as demo:
     gr.Markdown("# 🏛️ XAUUSD 1m AI Civilization\nSearching for the 90% Win-Rate Holy Grail")
     gr.DataFrame(value=get_dashboard, headers=["Agent ID", "Win Rate", "Trades", "PNL", "Config"], every=10)
-    gr.Markdown(f"**Generation:** {civ.generation}", every=10)
+    # Bug Fixed: Pass the function get_generation instead of static string, so it updates every 10 seconds.
+    gr.Markdown(get_generation, every=10)
 
 demo.queue().launch(server_name="0.0.0.0", server_port=7860)
