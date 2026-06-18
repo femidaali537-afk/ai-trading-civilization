@@ -52,14 +52,54 @@ class DataFetcher:
         self.yf = yf
         self._cache = None
         self._last_update = 0
+        self.local_data = []
+
+    def load_local_csvs(self):
+        """Load historical data from CSV files in data/ folder"""
+        data_dir = Path("data")
+        if not data_dir.exists(): return []
+        
+        all_data = []
+        csv_files = sorted(list(data_dir.glob("*.csv")))
+        
+        for f_path in csv_files:
+            try:
+                with open(f_path, "r") as f:
+                    for line in f:
+                        parts = line.strip().split(",")
+                        if len(parts) < 6: continue
+                        # Format: Date, Time, Open, High, Low, Close, Vol
+                        # date: 2024.01.01, time: 18:00
+                        ts = f"{parts[0].replace('.', '-')} {parts[1]}"
+                        all_data.append({
+                            "time": ts,
+                            "open": float(parts[2]),
+                            "high": float(parts[3]),
+                            "low": float(parts[4]),
+                            "close": float(parts[5]),
+                            "vol": float(parts[6]) if len(parts)>6 else 0
+                        })
+            except Exception as e:
+                Log.w(f"Error reading {f_path.name}: {e}")
+        
+        self.local_data = all_data
+        Log.i(f"Loaded {len(all_data)} historical bars from local CSVs.")
+        return all_data
 
     async def fetch_gold_1m(self):
+        # 1. Try Local Data First
+        if not self.local_data:
+            self.load_local_csvs()
+        
+        if self.local_data:
+            return self.local_data
+
+        # 2. Fallback to yfinance if no local data
         now = time.time()
         if self._cache and now - self._last_update < 60:
             return self._cache
         
         try:
-            # yfinance 1m data is limited to last 7 days
             df = self.yf.Ticker("GC=F").history(period="7d", interval="1m")
             if df.empty: return []
             

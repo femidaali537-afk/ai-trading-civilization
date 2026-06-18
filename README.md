@@ -1,3 +1,14 @@
+---
+title: Civilization Guardian
+emoji: 🏛️
+colorFrom: blue
+colorTo: yellow
+sdk: gradio
+sdk_version: 4.44.1
+app_file: app.py
+pinned: false
+---
+
 # 🏛️ XAUUSD 1m AI Trading Civilization
 
 This project implements a self-evolving population of 100 AI agents dedicated to finding the "Holy Grail" of Gold (XAUUSD) 1-minute scalping strategies.
