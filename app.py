@@ -120,8 +120,6 @@ class Strategy:
             
             # Risk Management (Fixed range 1:3 to 1:10)
             "rr_ratio": random.randint(3, 10),
-            "partial_tp_ratio": round(random.uniform(0.3, 0.7), 2), # % position closed at partial target
-            "partial_tp_trigger": round(random.uniform(1.5, 3.0), 2), # R-multiple to trigger partial take-profit
             "trailing_sl_step": round(random.uniform(1.0, 2.5), 2), # ATR step for trailing Stop Loss
             
             # Strategy Modular Settings (Unlimited strategy parameters)
@@ -159,7 +157,7 @@ class Strategy:
             child.params[p] = random.randint(3, 10) # Enforced 1:3 - 1:10
         elif p == "fib_level":
             child.params[p] = random.choice([0.618, 0.705, 0.786])
-        elif "mult" in p or "weight" in p or "size" in p or "threshold" in p or "ratio" in p or "trigger" in p or "step" in p:
+        elif "mult" in p or "weight" in p or "size" in p or "threshold" in p or "step" in p:
             child.params[p] = round(child.params[p] + random.uniform(-0.15, 0.15), 2)
             
         # Hard constraints safeguarding rules
@@ -168,8 +166,6 @@ class Strategy:
         child.params["rr_ratio"] = max(3, min(10, child.params["rr_ratio"]))
         child.params["smc_weight"] = max(0.0, min(1.0, child.params["smc_weight"]))
         child.params["min_atr_threshold"] = max(0.01, child.params["min_atr_threshold"])
-        child.params["partial_tp_ratio"] = max(0.1, min(0.9, child.params["partial_tp_ratio"]))
-        child.params["partial_tp_trigger"] = max(1.0, min(5.0, child.params["partial_tp_trigger"]))
         child.params["trailing_sl_step"] = max(0.5, min(4.0, child.params["trailing_sl_step"]))
         return child
 
@@ -208,9 +204,9 @@ class Strategy:
             Log.learn(f"🛡️ {self.name} feedback loop: Early stop outs detected. Expanding ATR protection mult to {self.params['atr_mult']} and lookback to {self.params['lookback']}.")
 
         if reversals_near_target > total_losses * 0.35:
-            self.params["partial_tp_ratio"] = round(min(0.8, self.params["partial_tp_ratio"] + 0.1), 2)
-            self.params["partial_tp_trigger"] = round(max(1.0, self.params["partial_tp_trigger"] - 0.25), 2)
-            Log.learn(f"⚡ {self.name} feedback loop: Targets missed. Accelerating partial exits (TP {int(self.params['partial_tp_ratio']*100)}% at {self.params['partial_tp_trigger']}R).")
+            if self.params["rr_ratio"] > 3:
+                self.params["rr_ratio"] -= 1
+                Log.learn(f"⚡ {self.name} feedback loop: Price reversing near targets -> Reduced RR target to 1:{self.params['rr_ratio']} for safer completions.")
 
         if flat_market_chops > total_losses * 0.35:
             self.params["min_atr_threshold"] = round(self.params["min_atr_threshold"] + 0.05, 2)
@@ -469,7 +465,6 @@ class Backtester:
                             "tp": entry + tp_dist, 
                             "entry_idx": i,
                             "entry_atr": atr_v[i],
-                            "partial_taken": False,
                             "trail_checkpoint": entry,
                             "is_silver_bullet": is_silver_bullet,
                             "is_mtf_aligned": htf_aligned_up if strat.params["use_mtf_alignment"] else True
@@ -482,27 +477,18 @@ class Backtester:
                             "tp": entry - tp_dist, 
                             "entry_idx": i,
                             "entry_atr": atr_v[i],
-                            "partial_taken": False,
                             "trail_checkpoint": entry,
                             "is_silver_bullet": is_silver_bullet,
                             "is_mtf_aligned": htf_aligned_down if strat.params["use_mtf_alignment"] else True
                         }
             
             else:
-                # TRADE MANAGEMENT WITH LIVE TRAILING AND PARTIAL TAKE PROFITS
+                # TRADE MANAGEMENT WITH LIVE TRAILING (NO PARTIAL BOOKING)
                 hit = None
                 duration = i - pos["entry_idx"]
                 current_price = closes[i]
                 
-                # Multi-stage execution targets
-                r_multiplier = abs(current_price - pos["entry"]) / (abs(pos["entry"] - pos["sl"]) + 1e-9)
-                
-                # 1. Partial Profit Taking Module
-                if not pos["partial_taken"] and r_multiplier >= strat.params["partial_tp_trigger"]:
-                    pos["partial_taken"] = True
-                    pos["sl"] = pos["entry"] 
-                    
-                # 2. Dynamic Trailing Stop Loss based on ATR checkpoints
+                # 1. Dynamic Trailing Stop Loss based on ATR checkpoints
                 step_size = atr_v[i] * strat.params["trailing_sl_step"]
                 if pos["dir"] == "BUY":
                     if current_price - pos["trail_checkpoint"] >= step_size:
@@ -513,7 +499,7 @@ class Backtester:
                         pos["sl"] = min(pos["sl"], current_price + (atr_v[i] * strat.params["atr_mult"]))
                         pos["trail_checkpoint"] = current_price
 
-                # 3. Final Hit Evaluations
+                # 2. Final Hit Evaluations (Clean classic all-or-nothing hold)
                 if pos["dir"] == "BUY":
                     if current_price <= pos["sl"]: hit = "SL"
                     elif current_price >= pos["tp"]: hit = "TP"
@@ -713,18 +699,13 @@ This archetype targets trend continuations and momentum expansions:
 
 ## 🛡️ EXTREME RISK MANAGEMENT PROTOCOLS (Self-Evolved)
 
-### 1. Partial Profit Taking (Target Scaling)
-- To achieve a robust win rate, this strategy **scales out** of positions.
-- **Partial Exit:** Close exactly **{int(p['partial_tp_ratio']*100)}%** of your position as soon as price moves **{p['partial_tp_trigger']}R** in profit.
-- **Break-Even Adjustment:** Once partial profit is captured, instantly move the Stop Loss of the remaining position to your **Entry Price (BE)**.
-
-### 2. Volatility Trailing Stop Loss
+### 1. Volatility Trailing Stop Loss
 - Protect capital using an ATR-based trailing stop.
 - **Trailing Step:** Trail stop-loss at a distance of **{p['atr_mult']} * ATR(14)**, updating your trailing checkpoint every time price moves in your direction by **{p['trailing_sl_step']} * ATR(14)**.
 
-### 3. Dynamic Stop Loss & Take Profit
+### 2. Dynamic Stop Loss & Take Profit
 - **Initial Stop Loss:** Place SL below the trigger low (for BUYs) or above the trigger high (for SELLs).
-- **Final Take Profit:** Fixed Target of **1:{p['rr_ratio']}** on the remaining position.
+- **Final Take Profit:** Fixed Target of **1:{p['rr_ratio']}** on your full position size. No partial profit booking is applied, ensuring positive mathematical expectancy on the complete trade size.
 
 ---
 **Generated by AI Trading Civilization Guardian - Agent {strat.name}**
@@ -826,7 +807,7 @@ def get_dashboard():
             f"{a.winrate:.2f}%", 
             a.trades, 
             f"{a.pnl:.1f}", 
-            f"{a.params['strategy_type']} (RR 1:{a.params['rr_ratio']}) | Partial TP: {int(a.params['partial_tp_ratio']*100)}% | MTF: {a.params['use_mtf_alignment']}"
+            f"{a.params['strategy_type']} (RR 1:{a.params['rr_ratio']}) | MTF: {a.params['use_mtf_alignment']}"
         ])
     return rows
 
